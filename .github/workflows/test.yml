@@ -1,0 +1,62 @@
+name: Test
+
+on:
+  workflow_dispatch:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        external-gtest: [ YES ]
+        os: [ ubuntu-24.04 ]
+
+    runs-on: ${{ matrix.os }}
+    name: Build with external_gtest=${{ matrix.external-gtest }} on ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    - name: install deps
+      run: |
+        sudo curl -L https://xrootd.web.cern.ch/repo/RPM-GPG-KEY.txt -o /etc/apt/trusted.gpg.d/xrootd.asc
+        sudo /bin/sh -c 'echo "deb https://xrootd.web.cern.ch/ubuntu noble stable" >> /etc/apt/sources.list.d/xrootd.list'
+        sudo apt update && sudo apt-get install -y cmake libcurl4-openssl-dev libcurl4 pkg-config libssl-dev xrootd-server libxrootd-dev libxrootd-server-dev libgtest-dev
+        sudo curl -L https://dl.min.io/server/minio/release/linux-amd64/minio -o /usr/local/bin/minio
+        sudo chmod +x /usr/local/bin/minio
+        sudo curl -L https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+        sudo chmod +x /usr/local/bin/mc
+
+    - name: Create Build Environment
+      # Some projects don't allow in-source building, so create a separate build directory
+      # We'll use this as our working directory for all subsequent commands
+      run: cmake -E make_directory ${{runner.workspace}}/build
+
+    - name: Configure CMake
+      shell: bash
+      working-directory: ${{runner.workspace}}/build
+      run: cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DXROOTD_PLUGINS_BUILD_UNITTESTS=yes -DXROOTD_PLUGINS_EXTERNAL_GTEST=${{ matrix.external-gtest }}
+
+    - name: Build
+      working-directory: ${{runner.workspace}}/build
+      shell: bash
+      run: cmake --build . --config $BUILD_TYPE
+
+    # TODO: Enable when we have unit tests to run!
+    #
+    #- name: Unit Tests
+    #  working-directory: ${{runner.workspace}}/build
+    #  shell: bash
+    #  run: ctest -C $BUILD_TYPE --verbose
