@@ -25,6 +25,7 @@
 #include <signal.h>
 #include <stdio.h>
 
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
