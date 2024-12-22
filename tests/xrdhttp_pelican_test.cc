@@ -16,10 +16,10 @@
  *
  ***************************************************************/
 
-#include <private/XrdHttp/XrdHttpExtHandler.hh>
 #include <XrdOuc/XrdOucEnv.hh>
 #include <XrdSys/XrdSysError.hh>
 #include <XrdSys/XrdSysLogger.hh>
+#include <private/XrdHttp/XrdHttpExtHandler.hh>
 
 #include <gtest/gtest.h>
 
@@ -31,21 +31,21 @@
 
 extern "C" {
 
-extern
-XrdHttpExtHandler *XrdHttpGetExtHandler(XrdSysError *log, const char *config,
-                                        const char * /*parms*/,
-                                        XrdOucEnv *myEnv);
+extern XrdHttpExtHandler *XrdHttpGetExtHandler(XrdSysError *log,
+                                               const char *config,
+                                               const char * /*parms*/,
+                                               XrdOucEnv *myEnv);
 }
 
 class HandlerDeathTest : public testing::Test {
-public:
+  public:
     // Child process function for shutdown
     void InnerShutdown();
 
     // Child process function for overwriting files
     void InnerOverwrite();
 
-private:
+  private:
     void SetUp() override;
 
     void TearDown() override;
@@ -55,10 +55,12 @@ private:
     void LaunchHandler();
 
     // Write a simple test file with some known contents.
-    void WriteTestFile(const std::string &location, const std::string &contents);
+    void WriteTestFile(const std::string &location,
+                       const std::string &contents);
 
     // Read test file; verify it has known contents.
-    void CheckTestFile(const std::string &location, const std::string &contents);
+    void CheckTestFile(const std::string &location,
+                       const std::string &contents);
 
     // Create a temporary file given a template
     std::string CreateTempfile(const std::string &location);
@@ -78,7 +80,8 @@ std::string HandlerDeathTest::CreateTempfile(const std::string &location) {
     auto location_template = location + ".XXXXXX";
     std::vector<char> location_template_buff;
     location_template_buff.resize(location_template.size() + 1);
-    std::copy(location_template.begin(), location_template.end(), location_template_buff.begin());
+    std::copy(location_template.begin(), location_template.end(),
+              location_template_buff.begin());
     location_template_buff[location_template.size()] = '\0';
 
     int fd;
@@ -88,48 +91,51 @@ std::string HandlerDeathTest::CreateTempfile(const std::string &location) {
     return location_template_buff.data();
 }
 
-void HandlerDeathTest::CheckTestFile(const std::string &location, const std::string &expected_contents) {
-     static const int maxsize = 4096;
-     ASSERT_LE(expected_contents.size(), maxsize);
+void HandlerDeathTest::CheckTestFile(const std::string &location,
+                                     const std::string &expected_contents) {
+    static const int maxsize = 4096;
+    ASSERT_LE(expected_contents.size(), maxsize);
 
-     std::string contents;
-     usleep(5'000);
-     for (int idx=0; idx<10; idx++) {
-         auto fd = open(location.c_str(), O_RDONLY);
-         ASSERT_NE(fd, -1);
+    std::string contents;
+    usleep(5'000);
+    for (int idx = 0; idx < 10; idx++) {
+        auto fd = open(location.c_str(), O_RDONLY);
+        ASSERT_NE(fd, -1);
 
-         std::vector<char> buff;
-         buff.resize(maxsize);
-         auto remaining = buff.size();
-         off_t offset = 0;
-         while (remaining) {
-             int rval = read(fd, buff.data() + offset, remaining);
-             if (rval == -1 && rval == EINTR) {
-                 continue;
-             }
-             ASSERT_GE(rval, 0);
-             if (rval == 0) {
-                 break;
-             }
-             remaining -= rval;
-             offset += rval;
-         }
-         close(fd);
+        std::vector<char> buff;
+        buff.resize(maxsize);
+        auto remaining = buff.size();
+        off_t offset = 0;
+        while (remaining) {
+            int rval = read(fd, buff.data() + offset, remaining);
+            if (rval == -1 && rval == EINTR) {
+                continue;
+            }
+            ASSERT_GE(rval, 0);
+            if (rval == 0) {
+                break;
+            }
+            remaining -= rval;
+            offset += rval;
+        }
+        close(fd);
 
-         contents = std::string{buff.data()};
-         if (contents == expected_contents) {
-             return;
-         }
-         usleep(50'000);
-     }
-     fprintf(stderr, "Contents: %s\nExpected contents: %s\n", contents.c_str(), expected_contents.c_str());
-     ASSERT_STREQ(contents.c_str(), expected_contents.c_str());
-     ASSERT_TRUE(contents == expected_contents);
-     ASSERT_TRUE(false);
-     fprintf(stderr, "Passed check test.\n");
+        contents = std::string{buff.data()};
+        if (contents == expected_contents) {
+            return;
+        }
+        usleep(50'000);
+    }
+    fprintf(stderr, "Contents: %s\nExpected contents: %s\n", contents.c_str(),
+            expected_contents.c_str());
+    ASSERT_STREQ(contents.c_str(), expected_contents.c_str());
+    ASSERT_TRUE(contents == expected_contents);
+    ASSERT_TRUE(false);
+    fprintf(stderr, "Passed check test.\n");
 }
 
-void HandlerDeathTest::WriteTestFile(const std::string &location, const std::string &contents) {
+void HandlerDeathTest::WriteTestFile(const std::string &location,
+                                     const std::string &contents) {
     auto fd = open(location.c_str(), O_WRONLY);
     EXPECT_NE(fd, -1) << "Error opening " << location << ": " << strerror(fd);
 
@@ -206,10 +212,10 @@ void HandlerDeathTest::SendCommand(char cmd, int socket, int fd) {
         char buf[CMSG_SPACE(sizeof(int))];
         struct cmsghdr align;
     } controlMsg;
-    
-    struct msghdr msg; 
+
+    struct msghdr msg;
     memset(&msg, '\0', sizeof(msg));
-    
+
     struct iovec iov;
     msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
@@ -245,6 +251,4 @@ void HandlerDeathTest::InnerOverwrite() {
     CheckTestFile(m_cert_file, "This is a new cert file");
 }
 
-TEST_F(HandlerDeathTest, Overwrite) {
-    InnerOverwrite();
-}
+TEST_F(HandlerDeathTest, Overwrite) { InnerOverwrite(); }

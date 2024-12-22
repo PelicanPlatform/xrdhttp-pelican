@@ -23,8 +23,8 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
-#include <sys/socket.h>
 #include <stdio.h>
+#include <sys/socket.h>
 
 #include <mutex>
 #include <sstream>
@@ -90,7 +90,8 @@ PelicanHandler::PelicanHandler(XrdSysError *log, const char * /*config*/,
     std::call_once(m_info_launch, [&] {
         auto fd_char = getenv("PELICAN_INFO_FD");
         if (fd_char) {
-             m_log.Emsg("PelicanHandler", "Will listen for command on FD", fd_char);
+            m_log.Emsg("PelicanHandler", "Will listen for command on FD",
+                       fd_char);
             int info_fd = std::stol(fd_char);
             if (info_fd < 0) {
                 std::stringstream ss;
@@ -106,13 +107,17 @@ PelicanHandler::PelicanHandler(XrdSysError *log, const char * /*config*/,
         if (ca_file_char) {
             m_ca_file = std::string(ca_file_char);
         } else {
-            m_log.Emsg("PelicanHandler", "XRDHTTP_PELICAN_CA_FILE environment variable not set; cannot update the CAs");
+            m_log.Emsg("PelicanHandler",
+                       "XRDHTTP_PELICAN_CA_FILE environment variable not set; "
+                       "cannot update the CAs");
         }
         auto cert_file_char = getenv("XRDHTTP_PELICAN_CERT_FILE");
         if (cert_file_char) {
             m_cert_file = cert_file_char;
         } else {
-            m_log.Emsg("PelicanHandler", "XRDHTTP_PELICAN_CERT_FILE environment variable not set; cannot update the host certificate");
+            m_log.Emsg("PelicanHandler",
+                       "XRDHTTP_PELICAN_CERT_FILE environment variable not "
+                       "set; cannot update the host certificate");
         }
 
         std::thread t(&PelicanHandler::InfoThread, this);
@@ -145,7 +150,7 @@ void PelicanHandler::ProcessMessage() {
     }
 
     union {
-        char   buf[CMSG_SPACE(sizeof(int))];
+        char buf[CMSG_SPACE(sizeof(int))];
         struct cmsghdr align;
     } controlMsg;
 
@@ -164,17 +169,16 @@ void PelicanHandler::ProcessMessage() {
 
     auto rval = recvmsg(m_info_fd, &msg, 0);
     if (rval == -1) {
-        m_log.Emsg("ProcessMessage", "Failed to receive message from parent:", strerror(errno));
+        m_log.Emsg("ProcessMessage",
+                   "Failed to receive message from parent:", strerror(errno));
         return;
     }
 
     auto cmsgp = CMSG_FIRSTHDR(&msg);
-    if (cmsgp == nullptr
-               || cmsgp->cmsg_len != CMSG_LEN(sizeof(int))
-               || cmsgp->cmsg_level != SOL_SOCKET
-               || cmsgp->cmsg_type != SCM_RIGHTS)
-    {
-        m_log.Emsg("ProcessMessage", "Received invalid control message from parent");
+    if (cmsgp == nullptr || cmsgp->cmsg_len != CMSG_LEN(sizeof(int)) ||
+        cmsgp->cmsg_level != SOL_SOCKET || cmsgp->cmsg_type != SCM_RIGHTS) {
+        m_log.Emsg("ProcessMessage",
+                   "Received invalid control message from parent");
         return;
     }
     int fd;
@@ -187,7 +191,8 @@ void PelicanHandler::ProcessMessage() {
         // Update the host certificate file (should contain the key as well
         AtomicOverwriteFile(fd, m_cert_file);
     } else {
-        m_log.Emsg("ProcessMessage", "Unknown message from parent:", std::to_string(data).c_str());
+        m_log.Emsg("ProcessMessage", "Unknown message from parent:",
+                   std::to_string(data).c_str());
     }
 }
 
@@ -198,11 +203,14 @@ void PelicanHandler::AtomicOverwriteFile(int fd, const std::string &loc) {
 
     const static std::string template_characters{".XXXXXX"};
     std::copy(loc.begin(), loc.end(), loc_template.begin());
-    std::copy(template_characters.begin(), template_characters.end(), loc_template.begin() + loc.size());
+    std::copy(template_characters.begin(), template_characters.end(),
+              loc_template.begin() + loc.size());
 
     int fd_new;
     if (-1 == (fd_new = mkstemp(loc_template.data()))) {
-        m_log.Emsg("AtomicOverwrite", "Failed to create temporary file for overwrite:", strerror(errno));
+        m_log.Emsg(
+            "AtomicOverwrite",
+            "Failed to create temporary file for overwrite:", strerror(errno));
         close(fd);
         return;
     }
@@ -216,11 +224,14 @@ void PelicanHandler::AtomicOverwriteFile(int fd, const std::string &loc) {
             if (errno == EINTR || errno == EAGAIN) {
                 continue;
             } else {
-                m_log.Emsg("AtomicOverwrite", "Failed to read from source FD:", strerror(errno));
+                m_log.Emsg("AtomicOverwrite",
+                           "Failed to read from source FD:", strerror(errno));
                 close(fd);
                 close(fd_new);
                 if (-1 == unlink(loc_template.data())) {
-                    m_log.Emsg("AtomicOverwrite", "Failed to unlink temporary file on cleanup:", strerror(errno));
+                    m_log.Emsg("AtomicOverwrite",
+                               "Failed to unlink temporary file on cleanup:",
+                               strerror(errno));
                 }
                 return;
             }
@@ -234,11 +245,16 @@ void PelicanHandler::AtomicOverwriteFile(int fd, const std::string &loc) {
                 if (errno == EINTR || errno == EAGAIN) {
                     continue;
                 } else {
-                    m_log.Emsg("AtomicOverwrite", "Failed to write to destination FD:", strerror(errno));
+                    m_log.Emsg(
+                        "AtomicOverwrite",
+                        "Failed to write to destination FD:", strerror(errno));
                     close(fd);
                     close(fd_new);
                     if (-1 == unlink(loc_template.data())) {
-                        m_log.Emsg("AtomicOverwrite", "Failed to unlink temporary file on cleanup:", strerror(errno));
+                        m_log.Emsg(
+                            "AtomicOverwrite",
+                            "Failed to unlink temporary file on cleanup:",
+                            strerror(errno));
                     }
                     return;
                 }
@@ -250,9 +266,12 @@ void PelicanHandler::AtomicOverwriteFile(int fd, const std::string &loc) {
     close(fd_new);
 
     if (-1 == rename(loc_template.data(), loc.data())) {
-        m_log.Emsg("AtomicOverwrite", "Failed to overwrite file:", strerror(errno));
+        m_log.Emsg("AtomicOverwrite",
+                   "Failed to overwrite file:", strerror(errno));
         if (-1 == unlink(loc_template.data())) {
-            m_log.Emsg("AtomicOverwrite", "Failed to unlink temporary file on cleanup:", strerror(errno));
+            m_log.Emsg(
+                "AtomicOverwrite",
+                "Failed to unlink temporary file on cleanup:", strerror(errno));
         }
     }
 }
@@ -279,9 +298,7 @@ bool PelicanHandler::MatchesPath(const char *verb, const char * /*path*/) {
     return false;
 }
 
-int PelicanHandler::ProcessReq(XrdHttpExtReq &req) {
-    return -1;
-}
+int PelicanHandler::ProcessReq(XrdHttpExtReq &req) { return -1; }
 
 extern "C" {
 
