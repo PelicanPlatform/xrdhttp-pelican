@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 class PelicanHandler : public XrdHttpExtHandler {
   public:
