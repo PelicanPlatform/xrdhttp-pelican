@@ -20,6 +20,7 @@
 
 #include "XrdSys/XrdSysError.hh"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
@@ -172,6 +173,31 @@ void PelicanHandler::ProcessMessage() {
     if (rval == -1) {
         m_log.Emsg("ProcessMessage",
                    "Failed to receive message from parent:", strerror(errno));
+        return;
+    }
+
+    // First, process messages that don't have a socket passed
+    if (data == 3) {
+        // Command to self-signal; payload is the signal to pass
+        union {
+            char buf[4];
+            uint32_t signal;
+        } signalBuffer;
+        if (recv(m_info_fd, signalBuffer.buf, 4, 0) == -1) {
+            m_log.Emsg("ProcessMessage",
+                       "Failed to receive signal number from parent:",
+                       strerror(errno));
+            return;
+        }
+        signalBuffer.signal = ntohl(signalBuffer.signal);
+        if (kill(getpid(), signalBuffer.signal) == -1) {
+            m_log.Emsg("ProcessMessage",
+                       "Failed to send signal to self:", strerror(errno));
+        }
+        return;
+    } else if (data != 1 && data != 2) {
+        m_log.Emsg("ProcessMessage", "Unknown control message from parent:",
+                   std::to_string(data).c_str());
         return;
     }
 

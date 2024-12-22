@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -45,6 +46,9 @@ class HandlerDeathTest : public testing::Test {
 
     // Child process function for overwriting files
     void InnerOverwrite();
+
+    // Child process function for sending signals to self
+    void InnerSignal();
 
   private:
     void SetUp() override;
@@ -189,14 +193,14 @@ void HandlerDeathTest::TearDown() {
 }
 
 void HandlerDeathTest::LaunchHandler() {
-    XrdSysLogger log;
-    XrdSysError eMsg(&log, "Shutdown");
+    auto log = new XrdSysLogger();
+    auto eMsg = new XrdSysError(log, "Shutdown");
     XrdOucEnv env;
 
     ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, m_socket), 0);
 
     setenv("PELICAN_INFO_FD", std::to_string(m_socket[1]).c_str(), 1);
-    ASSERT_NE(XrdHttpGetExtHandler(&eMsg, "", nullptr, &env), nullptr);
+    ASSERT_NE(XrdHttpGetExtHandler(eMsg, "", nullptr, &env), nullptr);
 }
 
 void HandlerDeathTest::InnerShutdown() {
@@ -205,7 +209,7 @@ void HandlerDeathTest::InnerShutdown() {
     close(m_socket[0]);
 
     // Above close should trigger the handler thread to SIGTERM the process.
-    sleep(5);
+    sleep(2);
 }
 
 void HandlerDeathTest::SendCommand(char cmd, int socket, int fd) {
@@ -237,6 +241,28 @@ void HandlerDeathTest::SendCommand(char cmd, int socket, int fd) {
 
 TEST_F(HandlerDeathTest, Shutdown) {
     EXPECT_EXIT(InnerShutdown(), testing::KilledBySignal(SIGTERM), "");
+}
+
+void HandlerDeathTest::InnerSignal() {
+    LaunchHandler();
+
+    char messageBuffer[5];
+    union {
+        char buf[sizeof(uint32_t)];
+        uint32_t signal;
+    } signalBuffer;
+    signalBuffer.signal = htonl(SIGINT);
+    messageBuffer[0] = 3;
+    memcpy(messageBuffer + 1, signalBuffer.buf, sizeof(signalBuffer));
+
+    ASSERT_NE(send(m_socket[0], messageBuffer, sizeof(messageBuffer), 0), -1);
+
+    // Above command should trigger a SIGINT; sleep until it is received
+    sleep(2);
+}
+
+TEST_F(HandlerDeathTest, Signal) {
+    EXPECT_EXIT(InnerSignal(), testing::KilledBySignal(SIGINT), "");
 }
 
 void HandlerDeathTest::InnerOverwrite() {
