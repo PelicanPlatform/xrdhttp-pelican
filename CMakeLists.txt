@@ -16,6 +16,16 @@ if(NOT APPLE)
   SET( CMAKE_MODULE_LINKER_FLAGS "-Wl,--no-undefined")
 endif()
 
+option(ENABLE_TESTS "Enable unit tests" FALSE)
+if (ENABLE_TESTS)
+  find_package(GTest REQUIRED)
+  enable_testing()
+  set(BUILD_TESTS TRUE)
+else()
+  set(BUILD_TESTS FALSE)
+endif()
+add_subdirectory(tests)
+
 include_directories(${XRootD_INCLUDE_DIR})
 
 add_library(XrdHttpPelicanObj OBJECT src/XrdHttpPelican.cc)
