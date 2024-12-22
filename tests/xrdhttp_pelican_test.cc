@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 
