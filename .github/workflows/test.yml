@@ -50,9 +50,7 @@ jobs:
       shell: bash
       run: cmake --build . --config $BUILD_TYPE
 
-    # TODO: Enable when we have unit tests to run!
-    #
-    #- name: Unit Tests
-    #  working-directory: ${{runner.workspace}}/build
-    #  shell: bash
-    #  run: ctest -C $BUILD_TYPE --verbose
+    - name: Unit Tests
+      working-directory: ${{runner.workspace}}/build
+      shell: bash
+      run: ctest -C $BUILD_TYPE --verbose
