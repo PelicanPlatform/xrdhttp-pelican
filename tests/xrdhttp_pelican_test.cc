@@ -199,7 +199,7 @@ void HandlerDeathTest::LaunchHandler() {
 
     ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, m_socket), 0);
 
-    setenv("PELICAN_INFO_FD", std::to_string(m_socket[1]).c_str(), 1);
+    setenv("XRDHTTP_PELICAN_INFO_FD", std::to_string(m_socket[1]).c_str(), 1);
     ASSERT_NE(XrdHttpGetExtHandler(eMsg, "", nullptr, &env), nullptr);
 }
 
