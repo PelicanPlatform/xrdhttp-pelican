@@ -90,7 +90,7 @@ PelicanHandler::PelicanHandler(XrdSysError *log, const char * /*config*/,
                                XrdOucEnv * /*myEnv*/)
     : m_log(*log) {
     std::call_once(m_info_launch, [&] {
-        auto fd_char = getenv("PELICAN_INFO_FD");
+        auto fd_char = getenv("XRDHTTP_PELICAN_INFO_FD");
         if (fd_char) {
             m_log.Emsg("PelicanHandler", "Will listen for command on FD",
                        fd_char);
