@@ -36,13 +36,13 @@ Requires: xrootd-client <  1:%{xrootd_current_major}.%{xrootd_next_minor}.0
 %build
 
 %cmake3 -DCMAKE_BUILD_TYPE=RelWithDebInfo
-pushd redhat-linux-build
+pushd %__cmake_builddir
 make VERBOSE=1 %{?_smp_mflags}
 popd
 
 %install
 rm -rf $RPM_BUILD_ROOT
-pushd redhat-linux-build
+pushd %__cmake_builddir
 make install DESTDIR=$RPM_BUILD_ROOT
 popd
 
