@@ -16,9 +16,18 @@
  *
  ***************************************************************/
 
-#include "private/XrdHttp/XrdHttpExtHandler.hh"
+#include "XrdHttpPelican.hh"
 
-#include "XrdSys/XrdSysError.hh"
+#include <XrdAcc/XrdAccAuthorize.hh>
+#include <XrdOfs/XrdOfsFSctl_PI.hh>
+#include <XrdOss/XrdOss.hh>
+#include <XrdOuc/XrdOucEnv.hh>
+#include <XrdOuc/XrdOucErrInfo.hh>
+#include <XrdSec/XrdSecEntity.hh>
+#include <XrdSec/XrdSecEntityAttr.hh>
+#include <XrdSfs/XrdSfsInterface.hh>
+#include <XrdSys/XrdSysError.hh>
+#include <XrdVersion.hh>
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -33,62 +42,55 @@
 #include <thread>
 #include <vector>
 
-class PelicanHandler : public XrdHttpExtHandler {
-  public:
-    PelicanHandler(XrdSysError *log, const char *config, XrdOucEnv *myEnv);
-    virtual ~PelicanHandler();
-
-    virtual bool MatchesPath(const char *verb, const char *path) override;
-    virtual int ProcessReq(XrdHttpExtReq &req) override;
-    virtual int Init(const char *cfgfile) override { return 0; }
-
-  private:
-    // A thread that does nothing but listens for the parent's pipe to
-    // close.  When it does close, send a SIGTERM to the existing
-    // process followed by a SIGTERM.
-    //
-    // This allows XRootD to auto-info when Pelican goes away.
-    void InfoThread();
-
-    // Ensure that the info thread is only started once.
-    static std::once_flag m_info_launch;
-
-    // The file descriptor to listen on for a pipe-based info.
-    static int m_info_fd;
-
-    // The location of the CA file for this process
-    static std::string m_ca_file;
-
-    // The location of the host certificate for this process
-    static std::string m_cert_file;
-
-    // Send a SIGTERM to self, followed by a 5 second sleep, followed
-    // by a SIGKILL (until the process exits).
-    void ShutdownSelf();
-
-    // Process a message from the info file descriptor; this pipe
-    // provides the ability for the parent process to update the CA
-    // and TLS certificate files.
-    void ProcessMessage();
-
-    // Atomically overwrite a location given a file descriptor with
-    // the new contents.
-    void AtomicOverwriteFile(int fd, const std::string &loc);
-
-    // Logger associated with the object
-    XrdSysError &m_log;
-};
-
 std::once_flag PelicanHandler::m_info_launch;
 int PelicanHandler::m_info_fd = -1;
 std::string PelicanHandler::m_ca_file;
 std::string PelicanHandler::m_cert_file;
+std::filesystem::path PelicanHandler::m_api_root{"/api/v1.0/pelican"};
+decltype(PelicanHandler::m_acc) PelicanHandler::m_acc{nullptr};
+decltype(PelicanHandler::m_is_cache) PelicanHandler::m_is_cache{false};
+decltype(PelicanHandler::m_fsctl) PelicanHandler::m_fsctl{nullptr};
+
+namespace {
+
+std::pair<bool, std::string> urlunquote(const std::string_view encoded) {
+    std::string decoded;
+    decoded.reserve(encoded.size());
+
+    for (size_t idx = 0; idx < encoded.size(); idx++) {
+        char c = encoded[idx];
+        if (c == '%') {
+            if (idx + 2 >= encoded.size()) {
+                return {false, ""};
+            }
+            char hex[3] = {encoded[idx + 1], encoded[idx + 2], '\0'};
+            idx += 3;
+            std::size_t pos;
+            try {
+                decoded += static_cast<char>(std::stoi(hex, &pos, 16));
+            } catch (std::invalid_argument const &exc) {
+                return {false, ""};
+            }
+            if (pos != 2) {
+                return {false, ""};
+            }
+        } else if (c == '+') {
+            decoded += ' ';
+        } else {
+            decoded += c;
+        }
+    }
+
+    return {true, decoded};
+}
+
+} // namespace
 
 PelicanHandler::~PelicanHandler() {}
 
 PelicanHandler::PelicanHandler(XrdSysError *log, const char * /*config*/,
-                               XrdOucEnv * /*myEnv*/)
-    : m_log(*log) {
+                               XrdOucEnv *xrdEnv)
+    : m_log(*log), m_manager(*xrdEnv) {
     std::call_once(m_info_launch, [&] {
         auto fd_char = getenv("XRDHTTP_PELICAN_INFO_FD");
         if (fd_char) {
@@ -120,6 +122,23 @@ PelicanHandler::PelicanHandler(XrdSysError *log, const char * /*config*/,
             m_log.Emsg("PelicanHandler",
                        "XRDHTTP_PELICAN_CERT_FILE environment variable not "
                        "set; cannot update the host certificate");
+        }
+
+        m_acc = reinterpret_cast<XrdAccAuthorize *>(
+            xrdEnv->GetPtr("XrdAccAuthorize*"));
+
+        long one;
+        m_is_cache = XrdOucEnv::Import("XRDPFC", one);
+
+        if (m_is_cache) {
+            m_fsctl = (XrdOfsFSctl_PI *)xrdEnv->GetPtr("XrdFSCtl_PC*");
+            if (!m_fsctl) {
+                m_log.Emsg("PelicanHandler", "m_fsctl:",
+                           std::to_string(reinterpret_cast<long long>(m_fsctl))
+                               .c_str());
+                // throw std::runtime_error("Cache control plugin is not
+                // loaded");
+            }
         }
 
         std::thread t(&PelicanHandler::InfoThread, this);
@@ -321,13 +340,199 @@ void PelicanHandler::ShutdownSelf() {
     }
 }
 
-bool PelicanHandler::MatchesPath(const char *verb, const char * /*path*/) {
-    return false;
+bool PelicanHandler::MatchesPath(const char *verb, const char *path) {
+    return m_is_cache && !strcmp(verb, "GET") &&
+           (!strcmp(path, "/pelican/api/v1.0/prestage") ||
+            !strcmp(path, "/pelican/api/v1.0/evict"));
 }
 
-int PelicanHandler::ProcessReq(XrdHttpExtReq &req) { return -1; }
+int PelicanHandler::ProcessReq(XrdHttpExtReq &req) {
+    auto pos = req.resource.find('?');
+    if (pos == std::string::npos) {
+        req.SendSimpleResp(400, "Bad Request", nullptr,
+                           "Prestage command request `path` query parameter",
+                           0);
+        return 1;
+    }
+    std::string_view query_params =
+        std::string_view{req.resource}.substr(pos + 1);
+    std::string_view path_view;
+    while (!query_params.empty()) {
+        if (query_params[0] == '&') {
+            query_params = query_params.substr(1);
+            continue;
+        }
+        auto last_arg = (pos = query_params.find('&')) == std::string::npos;
+        auto param = query_params.substr(0, last_arg);
+        if ((pos = param.find('=')) == std::string::npos) {
+            continue;
+        }
+        auto param_name = param.substr(0, pos);
+        if (param_name != "path") {
+            continue;
+        }
+        path_view = param.substr(pos);
+    }
+    auto [success, path_str] = urlunquote(path_view);
+    if (!success) {
+        req.SendSimpleResp(400, "Bad Request", nullptr,
+                           "Failed to unquote `path` query parameter value", 0);
+        return 1;
+    }
+
+    std::filesystem::path path(path_str);
+    path = path.lexically_normal();
+    if (!path.is_absolute()) {
+        req.SendSimpleResp(400, "Bad Request", nullptr,
+                           "Prestage request must be an absolute path", 0);
+    }
+
+    if (!strcmp("/pelican/api/v1.0/prestage", path.string().c_str())) {
+        return PrestageReq(path, req);
+    } else {
+        return EvictReq(path, req);
+    }
+}
+
+int PelicanHandler::EvictReq(const std::string &path, XrdHttpExtReq &req) {
+    auto &ent = req.GetSecEntity();
+    if (m_acc) {
+        if ((m_acc->Access(&ent, path.c_str(), AOP_Delete) &
+             XrdAccPriv_Delete) != XrdAccPriv_Read) {
+            req.SendSimpleResp(403, "Forbidden", nullptr,
+                               "Permission denied to evict path", 0);
+            return 1;
+        }
+    }
+
+    std::string message = "evict " + path;
+    XrdOucErrInfo einfo;
+    XrdSfsFSctl myData;
+    myData.Arg1 = "evict";
+    myData.Arg1Len = 1;
+    myData.Arg2Len = 1;
+    const char *myArgs[1];
+    myArgs[0] = path.c_str();
+    myData.ArgP = myArgs;
+    int fsctlRes = m_fsctl->FSctl(SFS_FSCTL_PLUGXC, myData, einfo);
+    bool locked = false;
+    if (fsctlRes == SFS_ERROR) {
+        auto ec = einfo.getErrInfo();
+        if (ec == ENOTTY) {
+            locked = true;
+        }
+    } else if (fsctlRes == 5) {
+        locked = true;
+    }
+    if (locked) {
+        return req.SendSimpleResp(
+            423, "Locked", nullptr,
+            "Cannot evict file that is in-use by the cache", 0);
+    } else {
+        return req.SendSimpleResp(200, "OK", nullptr,
+                                  "Cache eviction successful", 0);
+    }
+}
+
+int PelicanHandler::PrestageReq(const std::string &path, XrdHttpExtReq &req) {
+    auto &ent = req.GetSecEntity();
+    if (m_acc) {
+        if ((m_acc->Access(&ent, path.c_str(), AOP_Read) & XrdAccPriv_Read) !=
+            XrdAccPriv_Read) {
+            req.SendSimpleResp(403, "Forbidden", nullptr,
+                               "Permission denied to prestage path", 0);
+            return 1;
+        }
+    }
+
+    std::string user;
+    std::string vo{ent.vorg ? ent.vorg : ""};
+    if (ent.eaAPI && !ent.eaAPI->Get("token.subject", user)) {
+        std::string request_user;
+        if (ent.eaAPI->Get("request.name", request_user) &&
+            !request_user.empty()) {
+            user = request_user;
+        }
+    }
+    if (user.empty()) {
+        user = ent.name ? ent.name : "nobody";
+    }
+    if (!vo.empty()) {
+        user = vo + ":" + user;
+    }
+
+    XrdOucEnv env(nullptr, 0, &ent);
+    PrestageRequestManager::PrestageRequest request(user, path, env);
+    if (!m_manager.Produce(request)) {
+        req.SendSimpleResp(429, "Too Many Requests", nullptr,
+                           "Too many prestage requests at server", 0);
+    }
+
+    auto sent_resp = false;
+    int status;
+    while ((status = request.WaitFor(std::chrono::seconds(2))) <= 0) {
+        if (!sent_resp) {
+            if (req.StartChunkedResp(200, "OK", nullptr) < 0) {
+                m_log.Emsg("ProcessReq", "Failed to start response to client");
+                return -1;
+            }
+            sent_resp = true;
+        }
+        std::string resp;
+        if (request.IsActive()) {
+            resp = "status: active,offset=" +
+                   std::to_string(request.GetProgress());
+        } else {
+            resp = "status: queued";
+        }
+        if (req.ChunkResp(resp.c_str(), resp.size()) < 0) {
+            m_log.Emsg("ProcessReq", "Failed to send status report to client");
+            return -1;
+        }
+    }
+    std::string desc;
+    switch (status) {
+    case 401:
+        desc = "Unauthorized";
+        break;
+    case 403:
+        desc = "Forbidden";
+        break;
+    case 404:
+        desc = "File not found";
+        break;
+    case 409:
+        desc = "Resource is a directory";
+        break;
+    case 500:
+        desc = "Internal Server Error";
+        break;
+    default:
+        desc = "Internal Server Error";
+        status = 500;
+    }
+    if (!sent_resp) {
+        return req.SendSimpleResp(status, desc.c_str(), nullptr, nullptr, 0);
+    } else {
+        int rc;
+        if (status >= 300) {
+            auto resp = "failure: " + std::to_string(status) + "(" + desc +
+                        "): " + request.GetResults();
+            rc = req.ChunkResp(resp.c_str(), resp.size());
+        } else {
+            rc = req.ChunkResp("success: ok", 0);
+        }
+        if (rc < 0) {
+            m_log.Emsg("ProcessReq", "Failed to send final response to client");
+            return rc;
+        }
+        return req.ChunkResp(nullptr, 0);
+    }
+}
 
 extern "C" {
+
+XrdVERSIONINFO(XrdHttpGetExtHandler, XrdHttpPelican);
 
 XrdHttpExtHandler *XrdHttpGetExtHandler(XrdSysError *log, const char *config,
                                         const char * /*parms*/,
