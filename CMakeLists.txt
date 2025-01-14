@@ -4,11 +4,11 @@ project( xrdhttp-pelican )
 
 find_package( XRootD REQUIRED )
 
-set (CMAKE_CXX_STANDARD 17)
+set (CMAKE_CXX_STANDARD 20)
 
 find_package( Threads REQUIRED )
 
-if( CMAKE_COMPILER_IS_GNUCXX )
+if( CMAKE_BUILD_TYPE STREQUAL Debug )
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Werror" )
 endif()
 if(NOT APPLE)
@@ -28,7 +28,7 @@ add_subdirectory(tests)
 
 include_directories(${XRootD_INCLUDE_DIR})
 
-add_library(XrdHttpPelicanObj OBJECT src/XrdHttpPelican.cc)
+add_library(XrdHttpPelicanObj OBJECT src/XrdHttpPelican.cc src/Prestage.cc)
 target_link_libraries(XrdHttpPelicanObj ${XRootD_HTTP_LIBRARIES} ${XRootD_UTILS_LIBRARIES} Threads::Threads)
 set_target_properties(XrdHttpPelicanObj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -40,11 +40,10 @@ endif()
 add_library(XrdHttpPelican MODULE "$<TARGET_OBJECTS:XrdHttpPelicanObj>")
 target_link_libraries(XrdHttpPelican XrdHttpPelicanObj)
 
+SET(LIBRARY_SUFFIX ".so")
 if(APPLE)
-  SET(LIBRARY_SUFFIX ".dylib")
   set_target_properties(XrdHttpPelican PROPERTIES OUTPUT_NAME "XrdHttpPelican-${XRootD_VERSION_MAJOR}" SUFFIX ${LIBRARY_SUFFIX})
 else()
-  SET(LIBRARY_SUFFIX ".so")
   set_target_properties(XrdHttpPelican PROPERTIES OUTPUT_NAME "XrdHttpPelican-${XRootD_VERSION_MAJOR}" SUFFIX ${LIBRARY_SUFFIX} LINK_FLAGS "-Wl,--version-script=${CMAKE_SOURCE_DIR}/configs/export-lib-symbols")
 endif()
 
