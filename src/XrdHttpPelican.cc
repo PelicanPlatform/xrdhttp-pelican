@@ -329,6 +329,8 @@ int PelicanHandler::ProcessReq(XrdHttpExtReq &req) { return -1; }
 
 extern "C" {
 
+XrdVERSIONINFO(XrdHttpGetExtHandler, XrdHttpPelican);
+
 XrdHttpExtHandler *XrdHttpGetExtHandler(XrdSysError *log, const char *config,
                                         const char * /*parms*/,
                                         XrdOucEnv *myEnv) {
