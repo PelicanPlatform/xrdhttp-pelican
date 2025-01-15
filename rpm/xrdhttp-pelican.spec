@@ -56,4 +56,3 @@ rm -rf $RPM_BUILD_ROOT
 %changelog
 * Mon Dec 23 2024 Brian Bockelman <bbockelman@morgridge.org> - 0.0.3-1
 - First build of the xrdhttp-pelican plugin
-
