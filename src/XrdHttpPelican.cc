@@ -19,6 +19,7 @@
 #include "private/XrdHttp/XrdHttpExtHandler.hh"
 
 #include "XrdSys/XrdSysError.hh"
+#include <XrdVersion.hh>
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -328,6 +329,8 @@ bool PelicanHandler::MatchesPath(const char *verb, const char * /*path*/) {
 int PelicanHandler::ProcessReq(XrdHttpExtReq &req) { return -1; }
 
 extern "C" {
+
+XrdVERSIONINFO(XrdHttpGetExtHandler, XrdHttpPelican);
 
 XrdHttpExtHandler *XrdHttpGetExtHandler(XrdSysError *log, const char *config,
                                         const char * /*parms*/,
