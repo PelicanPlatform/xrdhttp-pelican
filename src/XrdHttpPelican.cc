@@ -153,69 +153,74 @@ Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
                        "set; cannot update the host certificate");
         }
 
-        XrdOucGatherConf pelicanhandler_conf("pelican.", &m_log);
-        int result;
-        if ((result = pelicanhandler_conf.Gather(
-                 configfn, XrdOucGatherConf::full_lines)) < 0) {
-            m_log.Emsg("Config", -result, "parsing config file", configfn);
-            throw std::invalid_argument(
-                "Failed to parse the configuration file");
-        }
-        m_log.setMsgMask(LogMask::Warning);
-        char *temporary;
-        while ((temporary = pelicanhandler_conf.GetLine())) {
-            auto attribute = pelicanhandler_conf.GetToken();
-
-            if (strcmp(attribute, "pelican.trace")) {
-                continue;
-            }
-
-            char *val = nullptr;
-            if (!(val = pelicanhandler_conf.GetToken())) {
-                m_log.Emsg("Config",
-                           "pelican.trace requires an argument.  Usage: "
-                           "pelican.trace [all|error|warning|info|debug|none]");
+        if (configfn && strlen(configfn)) {
+            XrdOucGatherConf pelicanhandler_conf("pelican.", &m_log);
+            int result;
+            if ((result = pelicanhandler_conf.Gather(
+                     configfn, XrdOucGatherConf::full_lines)) < 0) {
+                m_log.Emsg("Config", -result, "parsing config file", configfn);
                 throw std::invalid_argument(
-                    "Invalid configuration value in pelican.trace");
+                    "Failed to parse the configuration file");
             }
-            do {
-                if (!strcmp(val, "all")) {
-                    m_log.setMsgMask(m_log.getMsgMask() | LogMask::All);
-                } else if (!strcmp(val, "error")) {
-                    m_log.setMsgMask(m_log.getMsgMask() | LogMask::Error);
-                } else if (!strcmp(val, "warning")) {
-                    m_log.setMsgMask(m_log.getMsgMask() | LogMask::Warning);
-                } else if (!strcmp(val, "info")) {
-                    m_log.setMsgMask(m_log.getMsgMask() | LogMask::Info);
-                } else if (!strcmp(val, "debug")) {
-                    m_log.setMsgMask(m_log.getMsgMask() | LogMask::Debug);
-                } else if (!strcmp(val, "none")) {
-                    m_log.setMsgMask(0);
-                } else {
+            m_log.setMsgMask(LogMask::Warning);
+            char *temporary;
+            while ((temporary = pelicanhandler_conf.GetLine())) {
+                auto attribute = pelicanhandler_conf.GetToken();
+
+                if (strcmp(attribute, "pelican.trace")) {
+                    continue;
+                }
+
+                char *val = nullptr;
+                if (!(val = pelicanhandler_conf.GetToken())) {
                     m_log.Emsg(
                         "Config",
-                        "pelican.trace encountered an unknown directive:", val);
+                        "pelican.trace requires an argument.  Usage: "
+                        "pelican.trace [all|error|warning|info|debug|none]");
                     throw std::invalid_argument(
                         "Invalid configuration value in pelican.trace");
                 }
-            } while ((val = pelicanhandler_conf.GetToken()));
-            m_log.Emsg("Config", "Logging levels enabled -",
-                       LogMaskToString(m_log.getMsgMask()).c_str());
-        }
+                do {
+                    if (!strcmp(val, "all")) {
+                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::All);
+                    } else if (!strcmp(val, "error")) {
+                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Error);
+                    } else if (!strcmp(val, "warning")) {
+                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Warning);
+                    } else if (!strcmp(val, "info")) {
+                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Info);
+                    } else if (!strcmp(val, "debug")) {
+                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Debug);
+                    } else if (!strcmp(val, "none")) {
+                        m_log.setMsgMask(0);
+                    } else {
+                        m_log.Emsg(
+                            "Config",
+                            "pelican.trace encountered an unknown directive:",
+                            val);
+                        throw std::invalid_argument(
+                            "Invalid configuration value in pelican.trace");
+                    }
+                } while ((val = pelicanhandler_conf.GetToken()));
+                m_log.Emsg("Config", "Logging levels enabled -",
+                           LogMaskToString(m_log.getMsgMask()).c_str());
+            }
 
-        m_acc = reinterpret_cast<XrdAccAuthorize *>(
-            xrdEnv->GetPtr("XrdAccAuthorize*"));
+            m_acc = reinterpret_cast<XrdAccAuthorize *>(
+                xrdEnv->GetPtr("XrdAccAuthorize*"));
 
-        long one;
-        m_is_cache = XrdOucEnv::Import("XRDPFC", one);
+            long one;
+            m_is_cache = XrdOucEnv::Import("XRDPFC", one);
 
-        if (m_is_cache) {
-            m_sfs = reinterpret_cast<XrdSfsFileSystem *>(
-                xrdEnv->GetPtr("XrdSfsFileSystem*"));
-            if (!m_sfs) {
-                m_log.Emsg("PelicanHandler",
-                           "Filesystem control plugin is not available; cannot "
-                           "manage eviction");
+            if (m_is_cache) {
+                m_sfs = reinterpret_cast<XrdSfsFileSystem *>(
+                    xrdEnv->GetPtr("XrdSfsFileSystem*"));
+                if (!m_sfs) {
+                    m_log.Emsg(
+                        "PelicanHandler",
+                        "Filesystem control plugin is not available; cannot "
+                        "manage eviction");
+                }
             }
         }
 
