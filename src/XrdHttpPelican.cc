@@ -19,7 +19,6 @@
 #include "XrdHttpPelican.hh"
 
 #include <XrdAcc/XrdAccAuthorize.hh>
-#include <XrdSfs/XrdSfsInterface.hh>
 #include <XrdOfs/XrdOfsFSctl_PI.hh>
 #include <XrdOss/XrdOss.hh>
 #include <XrdOuc/XrdOucEnv.hh>
@@ -91,26 +90,26 @@ std::pair<bool, std::string> urlunquote(const std::string_view encoded) {
 
 std::string LogMaskToString(int mask) {
     if (mask == LogMask::All) {
-            return "all";
+        return "all";
     }
 
     bool has_entry = false;
     std::stringstream ss;
     if (mask & LogMask::Debug) {
-            ss << (has_entry ? ", " : "") << "debug";
-            has_entry = true;
+        ss << (has_entry ? ", " : "") << "debug";
+        has_entry = true;
     }
     if (mask & LogMask::Info) {
-            ss << (has_entry ? ", " : "") << "info";
-            has_entry = true;
+        ss << (has_entry ? ", " : "") << "info";
+        has_entry = true;
     }
     if (mask & LogMask::Warning) {
-            ss << (has_entry ? ", " : "") << "warning";
-            has_entry = true;
+        ss << (has_entry ? ", " : "") << "warning";
+        has_entry = true;
     }
     if (mask & LogMask::Error) {
-            ss << (has_entry ? ", " : "") << "error";
-            has_entry = true;
+        ss << (has_entry ? ", " : "") << "error";
+        has_entry = true;
     }
     return ss.str();
 }
@@ -119,8 +118,7 @@ std::string LogMaskToString(int mask) {
 
 Handler::~Handler() {}
 
-Handler::Handler(XrdSysError *log, const char * configfn,
-                               XrdOucEnv *xrdEnv)
+Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
     : m_log(*log), m_manager(*xrdEnv, *log) {
     std::call_once(m_info_launch, [&] {
         auto fd_char = getenv("XRDHTTP_PELICAN_INFO_FD");
@@ -157,9 +155,11 @@ Handler::Handler(XrdSysError *log, const char * configfn,
 
         XrdOucGatherConf pelicanhandler_conf("pelican.", &m_log);
         int result;
-        if ((result = pelicanhandler_conf.Gather(configfn, XrdOucGatherConf::full_lines)) < 0) {
-                m_log.Emsg("Config", -result, "parsing config file", configfn);
-                throw std::invalid_argument("Failed to parse the configuration file");
+        if ((result = pelicanhandler_conf.Gather(
+                 configfn, XrdOucGatherConf::full_lines)) < 0) {
+            m_log.Emsg("Config", -result, "parsing config file", configfn);
+            throw std::invalid_argument(
+                "Failed to parse the configuration file");
         }
         m_log.setMsgMask(LogMask::Warning);
         char *temporary;
@@ -172,10 +172,11 @@ Handler::Handler(XrdSysError *log, const char * configfn,
 
             char *val = nullptr;
             if (!(val = pelicanhandler_conf.GetToken())) {
-                    m_log.Emsg("Config",
-                                    "pelican.trace requires an argument.  Usage: "
-                                    "pelican.trace [all|error|warning|info|debug|none]");
-                    throw std::invalid_argument("Invalid configuration value in pelican.trace");
+                m_log.Emsg("Config",
+                           "pelican.trace requires an argument.  Usage: "
+                           "pelican.trace [all|error|warning|info|debug|none]");
+                throw std::invalid_argument(
+                    "Invalid configuration value in pelican.trace");
             }
             do {
                 if (!strcmp(val, "all")) {
@@ -191,15 +192,16 @@ Handler::Handler(XrdSysError *log, const char * configfn,
                 } else if (!strcmp(val, "none")) {
                     m_log.setMsgMask(0);
                 } else {
-                    m_log.Emsg("Config",
-                                     "pelican.trace encountered an unknown directive:", val);
-                    throw std::invalid_argument("Invalid configuration value in pelican.trace");
+                    m_log.Emsg(
+                        "Config",
+                        "pelican.trace encountered an unknown directive:", val);
+                    throw std::invalid_argument(
+                        "Invalid configuration value in pelican.trace");
                 }
             } while ((val = pelicanhandler_conf.GetToken()));
             m_log.Emsg("Config", "Logging levels enabled -",
-                         LogMaskToString(m_log.getMsgMask()).c_str());
+                       LogMaskToString(m_log.getMsgMask()).c_str());
         }
-
 
         m_acc = reinterpret_cast<XrdAccAuthorize *>(
             xrdEnv->GetPtr("XrdAccAuthorize*"));
@@ -208,9 +210,12 @@ Handler::Handler(XrdSysError *log, const char * configfn,
         m_is_cache = XrdOucEnv::Import("XRDPFC", one);
 
         if (m_is_cache) {
-            m_sfs = reinterpret_cast<XrdSfsFileSystem *>(xrdEnv->GetPtr("XrdSfsFileSystem*"));
+            m_sfs = reinterpret_cast<XrdSfsFileSystem *>(
+                xrdEnv->GetPtr("XrdSfsFileSystem*"));
             if (!m_sfs) {
-                m_log.Emsg("PelicanHandler", "Filesystem control plugin is not available; cannot manage eviction");
+                m_log.Emsg("PelicanHandler",
+                           "Filesystem control plugin is not available; cannot "
+                           "manage eviction");
             }
         }
 
@@ -425,16 +430,16 @@ int Handler::ProcessReq(XrdHttpExtReq &req) {
         m_log.Emsg("ProcessReq", "Missing internally-generated server data",
                    req.resource.c_str());
         req.SendSimpleResp(500, "Bad Request", nullptr,
-                           "Prestage request missing internal server data",
-                           0);
+                           "Prestage request missing internal server data", 0);
         return 1;
     }
     auto &query = iter->second;
     if (query.empty()) {
-        m_log.Emsg("ProcessReq", "Missing query parameter from request", req.resource.c_str());
-        req.SendSimpleResp(400, "Bad Request", nullptr,
-                           "Prestage command request requires the `path` query parameter",
-                           0);
+        m_log.Emsg("ProcessReq", "Missing query parameter from request",
+                   req.resource.c_str());
+        req.SendSimpleResp(
+            400, "Bad Request", nullptr,
+            "Prestage command request requires the `path` query parameter", 0);
         return 1;
     }
     std::string_view query_params = query;
@@ -488,7 +493,8 @@ int Handler::EvictReq(const std::string &path, XrdHttpExtReq &req) {
     auto &ent = req.GetSecEntity();
     if (m_acc) {
         if (!m_acc->Access(&ent, path.c_str(), AOP_Delete)) {
-            m_log.Log(LogMask::Info, "evict", "Permission denied to evict path", path.c_str());
+            m_log.Log(LogMask::Info, "evict", "Permission denied to evict path",
+                      path.c_str());
             req.SendSimpleResp(403, "Forbidden", nullptr,
                                "Permission denied to evict path", 0);
             return 1;
@@ -505,7 +511,8 @@ int Handler::EvictReq(const std::string &path, XrdHttpExtReq &req) {
     myArgs[0] = path.c_str();
     myArgs[1] = req.headers.find("xrd-http-query")->second.c_str();
     myData.ArgP = myArgs;
-    int fsctlRes = m_sfs->FSctl(SFS_FSCTL_PLUGXC, myData, einfo, &req.GetSecEntity());
+    int fsctlRes =
+        m_sfs->FSctl(SFS_FSCTL_PLUGXC, myData, einfo, &req.GetSecEntity());
     bool locked = false;
     if (fsctlRes == SFS_ERROR) {
         auto ec = einfo.getErrInfo();
@@ -516,7 +523,8 @@ int Handler::EvictReq(const std::string &path, XrdHttpExtReq &req) {
         locked = true;
     }
     if (locked) {
-        m_log.Log(LogMask::Info, "evict", "Evict failed because path is locked:", path.c_str());
+        m_log.Log(LogMask::Info, "evict",
+                  "Evict failed because path is locked:", path.c_str());
         return req.SendSimpleResp(
             423, "Locked", nullptr,
             "Cannot evict file that is in-use by the cache", 0);
@@ -537,7 +545,8 @@ int Handler::PrestageReq(const std::string &path, XrdHttpExtReq &req) {
         }
     }
 
-    m_log.Log(LogMask::Debug, "Prestage", "Handling prestage for path", path.c_str());
+    m_log.Log(LogMask::Debug, "Prestage", "Handling prestage for path",
+              path.c_str());
     std::string user;
     std::string vo{ent.vorg ? ent.vorg : ""};
     if (ent.eaAPI && !ent.eaAPI->Get("token.subject", user)) {

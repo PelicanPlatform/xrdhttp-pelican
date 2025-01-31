@@ -206,13 +206,15 @@ int PrestageRequestManager::PrestageRequest::WaitFor(
     return m_status;
 }
 
-PrestageRequestManager::PrestageRequestManager(XrdOucEnv &xrdEnv, XrdSysError &eDest)
-    : m_log(eDest)
-{
+PrestageRequestManager::PrestageRequestManager(XrdOucEnv &xrdEnv,
+                                               XrdSysError &eDest)
+    : m_log(eDest) {
     std::call_once(m_init_once, [&] {
         m_oss = static_cast<XrdOss *>(xrdEnv.GetPtr("XrdOss*"));
         if (!m_oss) {
-            m_log.Log(LogMask::Error, "RequestManager", "XrdOss plugin is not configured; prestage functionality disabled");
+            m_log.Log(LogMask::Error, "RequestManager",
+                      "XrdOss plugin is not configured; prestage functionality "
+                      "disabled");
         }
     });
 }
@@ -221,7 +223,9 @@ bool PrestageRequestManager::Produce(
     PrestageRequestManager::PrestageRequest &handler) {
 
     if (!m_oss) {
-        m_log.Log(LogMask::Debug, "RequestManager", "XrdOss plugin is not configured; prestage functionality disabled");
+        m_log.Log(
+            LogMask::Debug, "RequestManager",
+            "XrdOss plugin is not configured; prestage functionality disabled");
         return false;
     }
 
@@ -239,9 +243,8 @@ bool PrestageRequestManager::Produce(
         auto iter = m_pool_map.find(handler.GetIdentifier());
         if (iter == m_pool_map.end()) {
             queue = std::make_shared<PrestageQueue>(handler.GetIdentifier(),
-                                                       *this, *m_oss);
-            m_pool_map.insert(
-                iter, {handler.GetIdentifier(), queue});
+                                                    *this, *m_oss);
+            m_pool_map.insert(iter, {handler.GetIdentifier(), queue});
         } else {
             queue = iter->second;
         }

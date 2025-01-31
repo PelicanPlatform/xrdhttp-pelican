@@ -23,7 +23,8 @@ server_port() {
       echo "Waiting for xrootd to start ($IDX seconds so far) ..." >&2
     fi
     if [ $IDX -eq 10 ]; then
-      echo "xrootd failed to start - failing" >&2
+      echo "xrootd failed to start - dumping logs and failing" >&2
+      cat "$logfile" >&2
       exit 1
     fi
   done
