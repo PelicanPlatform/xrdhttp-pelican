@@ -9,6 +9,11 @@ include_directories(${XRootD_INCLUDE_DIR})
 add_executable(xrdhttp-pelican-test xrdhttp_pelican_test.cc)
 target_link_libraries(xrdhttp-pelican-test XrdHttpPelicanTesting GTest::GTest GTest::Main)
 
+add_library( XrdOssSlowOpen MODULE xrdoss_slowopen.cc )
+target_include_directories( XrdOssSlowOpen PRIVATE ${XRootD_INCLUDE_DIRS} )
+target_link_libraries( XrdOssSlowOpen ${XRootD_UTILS_LIBRARIES} ${XRootD_SERVER_LIBRARIES} )
+set_target_properties( XrdOssSlowOpen PROPERTIES OUTPUT_NAME "XrdOssSlowOpen-${XRootD_PLUGIN_VERSION}" SUFFIX ".so" )
+
 gtest_discover_tests(xrdhttp-pelican-test)
 
 add_test(NAME HTTP::pelican::setup
