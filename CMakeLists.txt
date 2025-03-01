@@ -6,6 +6,10 @@ find_package( XRootD REQUIRED )
 
 set (CMAKE_CXX_STANDARD 20)
 
+if( ENABLE_ASAN )
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -fsanitize=address")
+endif()
+
 find_package( Threads REQUIRED )
 
 if( CMAKE_BUILD_TYPE STREQUAL Debug )

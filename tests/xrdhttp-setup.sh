@@ -205,6 +205,7 @@ http.header2cgi Authorization authz
 xrd.tlsca certfile $XROOTD_CONFIGDIR/tlsca.pem
 xrd.tls $XROOTD_CONFIGDIR/tls.crt $XROOTD_CONFIGDIR/tls.key
 
+ofs.osslib ++ $BINARY_DIR/tests/libXrdOssSlowOpen.so
 oss.localroot $XROOTD_EXPORTDIR
 
 http.exthandler xrdpelican $BINARY_DIR/libXrdHttpPelican.so
@@ -230,6 +231,10 @@ EOF
 
 # Export some data through the origin
 echo "Hello, World" > "$XROOTD_EXPORTDIR/hello_world.txt"
+
+for idx in $(seq 1 10); do
+  dd if=/dev/urandom of="$XROOTD_EXPORTDIR/random_data_$idx.txt" bs=1024 count=4096 2> /dev/null
+done
 
 #####################
 # Launch the origin #
@@ -302,6 +307,9 @@ pss.cachelib libXrdPfc.so
 pss.origin $HOSTNAME:$ORIGIN_PORT
 
 pelican.trace debug
+pelican.worker_idle 10ms
+pelican.worker_max 2
+pelican.idle_request_max 2
 
 http.exthandler xrdpelican $BINARY_DIR/libXrdHttpPelican.so
 EOF
