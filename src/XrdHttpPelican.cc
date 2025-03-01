@@ -114,6 +114,128 @@ std::string LogMaskToString(int mask) {
     return ss.str();
 }
 
+bool ParseTimeout(const std::string &duration, struct timespec &result,
+                  std::string &errmsg) {
+
+    if (duration.empty()) {
+        errmsg = "cannot parse empty string as a time duration";
+        return false;
+    }
+    if (duration == "0") {
+        result = {0, 0};
+        return true;
+    }
+    struct timespec ts = {0, 0};
+    auto strValue = duration;
+    while (!strValue.empty()) {
+        std::size_t pos;
+        double value;
+        try {
+            value = std::stod(strValue, &pos);
+        } catch (std::invalid_argument const &exc) {
+            errmsg = "Invalid number provided as timeout: " + strValue;
+            return false;
+        } catch (std::out_of_range const &exc) {
+            errmsg = "Provided timeout out of representable range: " +
+                     std::string(exc.what());
+            return false;
+        }
+        if (value < 0) {
+            errmsg = "Provided timeout was negative";
+            return false;
+        }
+        strValue = strValue.substr(pos);
+        char unit[3] = {'\0', '\0', '\0'};
+        if (!strValue.empty()) {
+            unit[0] = strValue[0];
+            if (unit[0] >= '0' && unit[0] <= '9') {
+                unit[0] = '\0';
+            }
+        }
+        if (strValue.size() > 1) {
+            unit[1] = strValue[1];
+            if (unit[1] >= '0' && unit[1] <= '9') {
+                unit[1] = '\0';
+            }
+        }
+        if (!strncmp(unit, "ns", 2)) {
+            ts.tv_nsec += value;
+        } else if (!strncmp(unit, "us", 2)) {
+            auto value_s = (static_cast<long long>(value)) / 1'000'000;
+            ts.tv_sec += value_s;
+            value -= value_s * 1'000'000;
+            ts.tv_nsec += value * 1'000'000;
+        } else if (!strncmp(unit, "ms", 2)) {
+            auto value_s = (static_cast<long long>(value)) / 1'000;
+            ts.tv_sec += value_s;
+            value -= value_s * 1'000;
+            ts.tv_nsec += value * 1'000'000;
+        } else if (!strncmp(unit, "s", 1)) {
+            auto value_s = (static_cast<long long>(value));
+            ts.tv_sec += value_s;
+            value -= value_s;
+            ts.tv_nsec += value * 1'000'000'000;
+        } else if (!strncmp(unit, "m", 1)) {
+            value *= 60;
+            auto value_s = (static_cast<long long>(value));
+            ts.tv_sec += value_s;
+            value -= value_s;
+            ts.tv_nsec += value * 1'000'000'000;
+        } else if (!strncmp(unit, "h", 1)) {
+            value *= 3600;
+            auto value_s = (static_cast<long long>(value));
+            ts.tv_sec += value_s;
+            value -= value_s;
+            ts.tv_nsec += value * 1'000'000'000;
+        } else if (strlen(unit) > 0) {
+            errmsg = "Unknown unit in duration: " + std::string(unit);
+            return false;
+        } else {
+            errmsg = "Unit missing from duration: " + duration;
+            return false;
+        }
+        if (ts.tv_nsec > 1'000'000'000) {
+            ts.tv_sec += ts.tv_nsec / 1'000'000'000;
+            ts.tv_nsec = ts.tv_nsec % 1'000'000'000;
+        }
+        strValue = strValue.substr(strlen(unit));
+    }
+    result.tv_nsec = ts.tv_nsec;
+    result.tv_sec = ts.tv_sec;
+    return true;
+}
+
+unsigned ParseUnsignedConfig(const std::string &val, const std::string &name,
+                             XrdSysError &log) {
+    size_t consumed;
+    int result;
+    try {
+        result = std::stoi(val, &consumed);
+    } catch (std::invalid_argument const &exc) {
+        log.Emsg("Config",
+                 "Invalid value for pelican.worker_max:", val.c_str());
+        throw std::invalid_argument(
+            "Invalid configuration value in pelican.worker_max");
+    } catch (std::out_of_range const &exc) {
+        log.Emsg("Config",
+                 "Value for pelican.worker_max out of range:", val.c_str());
+        throw std::invalid_argument(
+            "Invalid configuration value in pelican.worker_max");
+    }
+    if (result <= 0) {
+        log.Emsg("Config",
+                 "Invalid value for pelican.worker_max:", val.c_str());
+        throw std::invalid_argument(
+            "Invalid configuration value in pelican.worker_max");
+    } else if (consumed != strlen(val.c_str())) {
+        log.Emsg("Config",
+                 "Invalid value for pelican.worker_max:", val.c_str());
+        throw std::invalid_argument(
+            "Invalid configuration value in pelican.worker_max");
+    }
+    return static_cast<unsigned>(result);
+}
+
 } // namespace
 
 Handler::~Handler() {}
@@ -167,43 +289,110 @@ Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
             while ((temporary = pelicanhandler_conf.GetLine())) {
                 auto attribute = pelicanhandler_conf.GetToken();
 
-                if (strcmp(attribute, "pelican.trace")) {
-                    continue;
-                }
-
-                char *val = nullptr;
-                if (!(val = pelicanhandler_conf.GetToken())) {
-                    m_log.Emsg(
-                        "Config",
-                        "pelican.trace requires an argument.  Usage: "
-                        "pelican.trace [all|error|warning|info|debug|none]");
-                    throw std::invalid_argument(
-                        "Invalid configuration value in pelican.trace");
-                }
-                do {
-                    if (!strcmp(val, "all")) {
-                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::All);
-                    } else if (!strcmp(val, "error")) {
-                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Error);
-                    } else if (!strcmp(val, "warning")) {
-                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Warning);
-                    } else if (!strcmp(val, "info")) {
-                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Info);
-                    } else if (!strcmp(val, "debug")) {
-                        m_log.setMsgMask(m_log.getMsgMask() | LogMask::Debug);
-                    } else if (!strcmp(val, "none")) {
-                        m_log.setMsgMask(0);
-                    } else {
+                if (!strcmp(attribute, "pelican.trace")) {
+                    char *val = nullptr;
+                    if (!(val = pelicanhandler_conf.GetToken())) {
                         m_log.Emsg(
                             "Config",
-                            "pelican.trace encountered an unknown directive:",
-                            val);
+                            "pelican.trace requires an argument.  Usage: "
+                            "pelican.trace "
+                            "[all|error|warning|info|debug|none]");
                         throw std::invalid_argument(
                             "Invalid configuration value in pelican.trace");
                     }
-                } while ((val = pelicanhandler_conf.GetToken()));
-                m_log.Emsg("Config", "Logging levels enabled -",
-                           LogMaskToString(m_log.getMsgMask()).c_str());
+                    do {
+                        if (!strcmp(val, "all")) {
+                            m_log.setMsgMask(m_log.getMsgMask() | LogMask::All);
+                        } else if (!strcmp(val, "error")) {
+                            m_log.setMsgMask(m_log.getMsgMask() |
+                                             LogMask::Error);
+                        } else if (!strcmp(val, "warning")) {
+                            m_log.setMsgMask(m_log.getMsgMask() |
+                                             LogMask::Warning);
+                        } else if (!strcmp(val, "info")) {
+                            m_log.setMsgMask(m_log.getMsgMask() |
+                                             LogMask::Info);
+                        } else if (!strcmp(val, "debug")) {
+                            m_log.setMsgMask(m_log.getMsgMask() |
+                                             LogMask::Debug);
+                        } else if (!strcmp(val, "none")) {
+                            m_log.setMsgMask(0);
+                        } else {
+                            m_log.Emsg("Config",
+                                       "pelican.trace encountered an unknown "
+                                       "directive:",
+                                       val);
+                            throw std::invalid_argument(
+                                "Invalid configuration value in pelican.trace");
+                        }
+                    } while ((val = pelicanhandler_conf.GetToken()));
+                    m_log.Emsg("Config", "Logging levels enabled -",
+                               LogMaskToString(m_log.getMsgMask()).c_str());
+                } else if (!strcmp(attribute, "pelican.worker_idle")) {
+                    char *val = nullptr;
+                    if (!(val = pelicanhandler_conf.GetToken())) {
+                        m_log.Emsg("Config",
+                                   "pelican.worker_idle requires an argument.\n"
+                                   "Usage: pelican.worker_idle <idle_timeout>\n"
+                                   "Example: pelican.worker_idle 5m\n"
+                                   "Units accepted include ms, s, m, h; unit "
+                                   "must be specified");
+                        throw std::invalid_argument(
+                            "Invalid configuration value in "
+                            "pelican.worker_idle");
+                    }
+                    struct timespec idle_timeout;
+                    std::string errmsg;
+                    if (!ParseTimeout(val, idle_timeout, errmsg)) {
+                        m_log.Emsg("Config",
+                                   "Failed to parse worker idle timeout:",
+                                   errmsg.c_str());
+                        throw std::invalid_argument(
+                            "Invalid configuration value in "
+                            "pelican.worker_idle");
+                    }
+                    m_manager.SetWorkerIdleTimeout(
+                        std::chrono::seconds(idle_timeout.tv_sec) +
+                        std::chrono::nanoseconds(idle_timeout.tv_nsec));
+                    m_log.Emsg("Config", "Worker idle timeout set to", val);
+                } else if (!strcmp(attribute, "pelican.worker_max")) {
+                    char *val = nullptr;
+                    if (!(val = pelicanhandler_conf.GetToken())) {
+                        m_log.Emsg("Config",
+                                   "pelican.worker_max requires an argument.\n"
+                                   "Usage: pelican.worker_max <max_workers>\n"
+                                   "Example: pelican.worker_max 20");
+                        throw std::invalid_argument(
+                            "Invalid configuration value in "
+                            "pelican.worker_max");
+                    }
+                    int max_workers =
+                        ParseUnsignedConfig(val, "pelican.worker_max", m_log);
+                    m_manager.SetMaxWorkers(max_workers);
+                    m_log.Emsg("Config", "Maximum worker count set to", val);
+                } else if (!strcmp(attribute, "pelican.idle_request_max")) {
+                    char *val = nullptr;
+                    if (!(val = pelicanhandler_conf.GetToken())) {
+                        m_log.Emsg(
+                            "Config",
+                            "pelican.idle_request_max requires an argument.\n"
+                            "Usage: pelican.idle_request_max <max_requests>\n"
+                            "Example: pelican.idle_request_max 100");
+                        throw std::invalid_argument(
+                            "Invalid configuration value in "
+                            "pelican.idle_request_max");
+                    }
+                    int max_requests = ParseUnsignedConfig(
+                        val, "pelican.idle_request_max", m_log);
+                    m_manager.SetMaxIdleRequests(max_requests);
+                    m_log.Emsg("Config", "Maximum idle request count set to",
+                               val);
+                } else {
+                    m_log.Emsg("Config",
+                               "Unknown configuration directive:", attribute);
+                    throw std::invalid_argument(
+                        "Unknown configuration directive in pelican.");
+                }
             }
 
             m_acc = reinterpret_cast<XrdAccAuthorize *>(

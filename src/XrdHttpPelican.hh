@@ -23,10 +23,12 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
+#include <queue>
 #include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 class XrdAccAuthorize;
 class XrdOfsFSctl_PI;
@@ -93,6 +95,12 @@ class PrestageRequestManager final {
 
     bool Produce(PrestageRequest &handler);
 
+    void SetWorkerIdleTimeout(std::chrono::steady_clock::duration dur);
+    void SetMaxWorkers(unsigned max_workers) { m_max_workers = max_workers; }
+    void SetMaxIdleRequests(unsigned max_pending_ops) {
+        m_max_pending_ops = max_pending_ops;
+    }
+
   private:
     class PrestageQueue {
         class PrestageWorker;
@@ -100,13 +108,14 @@ class PrestageRequestManager final {
       public:
         PrestageQueue(const std::string &ident, PrestageRequestManager &parent,
                       XrdOss &oss)
-            : m_oss(oss), m_parent(parent) {}
+            : m_label(ident), m_oss(oss), m_parent(parent) {}
 
         bool Produce(PrestageRequest &handler);
-        PrestageRequest &Consume();
         PrestageRequest *TryConsume();
-        PrestageRequest *ConsumeUntil(std::chrono::steady_clock::duration dur);
+        PrestageRequest *ConsumeUntil(std::chrono::steady_clock::duration dur,
+                                      PrestageWorker *worker);
         void Done(PrestageWorker *);
+        bool IsDone() const { return m_done; }
 
       private:
         class PrestageWorker final {
@@ -118,24 +127,26 @@ class PrestageRequestManager final {
             void Run();
             static void RunStatic(PrestageWorker *myself);
 
+            bool IsIdle() const { return m_idle; }
+            void SetIdle(bool idle) { m_idle = idle; }
+            std::condition_variable m_cv;
+
           private:
             void Prestage(PrestageRequest &request);
 
+            bool m_idle{false};
             const std::string m_label;
             XrdOss &m_oss;
             PrestageQueue &m_queue;
         };
 
-        int m_idle{0};
+        bool m_done{false};
         const std::string m_label;
         XrdOss &m_oss;
         std::vector<std::unique_ptr<PrestageWorker>> m_workers;
         std::deque<PrestageRequest *> m_ops;
-        std::condition_variable m_cv;
         std::mutex m_mutex;
         PrestageRequestManager &m_parent;
-        const static unsigned m_max_pending_ops{20};
-        const static unsigned m_max_workers{20};
     };
 
     void Done(const std::string &ident);
@@ -146,8 +157,11 @@ class PrestageRequestManager final {
 
     XrdSysError &m_log; // Log object for the prestage manager
 
+    static std::chrono::steady_clock::duration m_idle_timeout;
     static std::unordered_map<std::string, std::shared_ptr<PrestageQueue>>
         m_pool_map;
+    static unsigned m_max_pending_ops;
+    static unsigned m_max_workers;
     static std::once_flag m_init_once;
 };
 
