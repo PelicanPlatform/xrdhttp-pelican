@@ -1,6 +1,6 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.3
+Version: 0.0.4
 Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
@@ -54,5 +54,8 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Sat Mar 1 2025 Brian Bockelman <bbockelman@morgridge.org> - 0.0.4-1
+- Add ability to prestage and evict objects from cache.
+
 * Mon Dec 23 2024 Brian Bockelman <bbockelman@morgridge.org> - 0.0.3-1
 - First build of the xrdhttp-pelican plugin
