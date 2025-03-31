@@ -285,14 +285,15 @@ Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
                        "XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE environment "
                        "variable not set; cannot pass a cache self-test file");
         }
-        auto cache_self_test_file_cinfo_char = 
+        auto cache_self_test_file_cinfo_char =
             getenv("XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE_CINFO");
         if (cache_self_test_file_cinfo_char) {
             m_cache_self_test_file_cinfo = cache_self_test_file_cinfo_char;
         } else {
-            m_log.Emsg("PelicanHandler",
-                       "XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE_CINFO environment "
-                       "variable not set; cannot pass a cache self-test file cinfo");
+            m_log.Emsg(
+                "PelicanHandler",
+                "XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE_CINFO environment "
+                "variable not set; cannot pass a cache self-test file cinfo");
         }
 
         if (configfn && strlen(configfn)) {
