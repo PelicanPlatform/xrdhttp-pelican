@@ -110,9 +110,10 @@ void PrestageRequestManager::PrestageQueue::PrestageWorker::Run() {
 void PrestageRequestManager::PrestageQueue::Done(PrestageWorker *worker) {
     std::unique_lock lock(m_mutex);
     m_done = true;
-    auto it = std::remove_if(m_workers.begin(), m_workers.end(), [&](std::unique_ptr<PrestageWorker> &other) {
-        return other.get() == worker;
-    });
+    auto it = std::remove_if(m_workers.begin(), m_workers.end(),
+                             [&](std::unique_ptr<PrestageWorker> &other) {
+                                 return other.get() == worker;
+                             });
     m_workers.erase(it, m_workers.end());
 
     if (m_workers.empty()) {
