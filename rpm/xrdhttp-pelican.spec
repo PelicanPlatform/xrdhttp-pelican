@@ -1,6 +1,6 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.4
+Version: 0.0.5
 Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
@@ -12,8 +12,8 @@ URL: https://github.com/pelicanplatform/xrdhttp-pelican
 Source0: %{name}-%{version}.tar.gz
 
 %define xrootd_current_major 5
-%define xrootd_current_minor 7
-%define xrootd_next_minor 8
+%define xrootd_current_minor 8
+%define xrootd_next_minor 9
 
 BuildRoot: %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 # Since we rely on the private headers, we don't want the plugin to cross
@@ -54,6 +54,9 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Tue Apr 22 2025 Matyas Selmeci <mselmeci@wisc.edu> - 0.0.5-1
+- Require XRootD 5.8
+ 
 * Sat Mar 1 2025 Brian Bockelman <bbockelman@morgridge.org> - 0.0.4-1
 - Add ability to prestage and evict objects from cache.
 
