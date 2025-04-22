@@ -50,6 +50,8 @@ std::once_flag Handler::m_info_launch;
 int Handler::m_info_fd = -1;
 std::string Handler::m_ca_file;
 std::string Handler::m_cert_file;
+std::string Handler::m_cache_self_test_file;
+std::string Handler::m_cache_self_test_file_cinfo;
 std::filesystem::path Handler::m_api_root{"/api/v1.0/pelican"};
 decltype(Handler::m_acc) Handler::m_acc{nullptr};
 decltype(Handler::m_is_cache) Handler::m_is_cache{false};
@@ -274,6 +276,25 @@ Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
                        "XRDHTTP_PELICAN_CERT_FILE environment variable not "
                        "set; cannot update the host certificate");
         }
+        auto cache_self_test_file_char =
+            getenv("XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE");
+        if (cache_self_test_file_char) {
+            m_cache_self_test_file = cache_self_test_file_char;
+        } else {
+            m_log.Emsg("PelicanHandler",
+                       "XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE environment "
+                       "variable not set; cannot pass a cache self-test file");
+        }
+        auto cache_self_test_file_cinfo_char =
+            getenv("XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE_CINFO");
+        if (cache_self_test_file_cinfo_char) {
+            m_cache_self_test_file_cinfo = cache_self_test_file_cinfo_char;
+        } else {
+            m_log.Emsg(
+                "PelicanHandler",
+                "XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE_CINFO environment "
+                "variable not set; cannot pass a cache self-test file cinfo");
+        }
 
         if (configfn && strlen(configfn)) {
             XrdOucGatherConf pelicanhandler_conf("pelican.", &m_log);
@@ -486,7 +507,7 @@ void Handler::ProcessMessage() {
                        "Failed to send signal to self:", strerror(errno));
         }
         return;
-    } else if (data != 1 && data != 2) {
+    } else if (data != 1 && data != 2 && data != 4 && data != 5) {
         m_log.Emsg("ProcessMessage", "Unknown control message from parent:",
                    std::to_string(data).c_str());
         return;
@@ -508,6 +529,12 @@ void Handler::ProcessMessage() {
     } else if (data == 2) {
         // Update the host certificate file (should contain the key as well
         AtomicOverwriteFile(fd, m_cert_file);
+    } else if (data == 4) {
+        // Pass a cache self test file
+        AtomicOverwriteFile(fd, m_cache_self_test_file);
+    } else if (data == 5) {
+        // Pass a cache self test file cinfo
+        AtomicOverwriteFile(fd, m_cache_self_test_file_cinfo);
     } else {
         m_log.Emsg("ProcessMessage", "Unknown message from parent:",
                    std::to_string(data).c_str());

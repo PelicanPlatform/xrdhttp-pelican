@@ -204,6 +204,12 @@ class Handler : public XrdHttpExtHandler {
     // The location of the host certificate for this process
     static std::string m_cert_file;
 
+    // The location of the cache self-test file
+    static std::string m_cache_self_test_file;
+
+    // The location of the cache self-test file cinfo
+    static std::string m_cache_self_test_file_cinfo;
+
     // Send a SIGTERM to self, followed by a 5 second sleep, followed
     // by a SIGKILL (until the process exits).
     void ShutdownSelf();
