@@ -18,6 +18,7 @@
 
 #include "private/XrdHttp/XrdHttpExtHandler.hh"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
