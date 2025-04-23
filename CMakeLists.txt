@@ -2,6 +2,8 @@
 cmake_minimum_required( VERSION 3.16 )
 project( xrdhttp-pelican )
 
+set( CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake )
+
 find_package( XRootD REQUIRED )
 
 set (CMAKE_CXX_STANDARD 20)
@@ -20,6 +22,8 @@ if(NOT APPLE)
   SET( CMAKE_MODULE_LINKER_FLAGS "-Wl,--no-undefined")
 endif()
 
+find_package( Filesystem REQUIRED )
+
 option(ENABLE_TESTS "Enable unit tests" FALSE)
 if (ENABLE_TESTS)
   find_package(GTest REQUIRED)
@@ -33,7 +37,7 @@ add_subdirectory(tests)
 include_directories(${XRootD_INCLUDE_DIR})
 
 add_library(XrdHttpPelicanObj OBJECT src/XrdHttpPelican.cc src/Prestage.cc)
-target_link_libraries(XrdHttpPelicanObj ${XRootD_HTTP_LIBRARIES} ${XRootD_UTILS_LIBRARIES} Threads::Threads)
+target_link_libraries(XrdHttpPelicanObj ${XRootD_HTTP_LIBRARIES} ${XRootD_UTILS_LIBRARIES} Threads::Threads std::filesystem)
 set_target_properties(XrdHttpPelicanObj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # The test executables cannot link against the normal library on Linux as we hide the exported symbols
