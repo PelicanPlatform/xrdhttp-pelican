@@ -22,6 +22,7 @@
 #include <XrdOuc/XrdOucEnv.hh>
 #include <XrdSys/XrdSysError.hh>
 
+#include <algorithm>
 #include <string>
 #include <thread>
 
