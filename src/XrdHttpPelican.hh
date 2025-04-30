@@ -210,6 +210,12 @@ class Handler : public XrdHttpExtHandler {
     // The location of the cache self-test file cinfo
     static std::string m_cache_self_test_file_cinfo;
 
+    // The location of the generated auth file
+    static std::string m_authfile_generated;
+    
+    // The location of the generated scitokens file
+    static std::string m_scitokens_generated;
+
     // Send a SIGTERM to self, followed by a 5 second sleep, followed
     // by a SIGKILL (until the process exits).
     void ShutdownSelf();

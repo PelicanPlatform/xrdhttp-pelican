@@ -52,6 +52,8 @@ std::string Handler::m_ca_file;
 std::string Handler::m_cert_file;
 std::string Handler::m_cache_self_test_file;
 std::string Handler::m_cache_self_test_file_cinfo;
+std::string Handler::m_authfile_generated;
+std::string Handler::m_scitokens_generated;
 std::filesystem::path Handler::m_api_root{"/api/v1.0/pelican"};
 decltype(Handler::m_acc) Handler::m_acc{nullptr};
 decltype(Handler::m_is_cache) Handler::m_is_cache{false};
@@ -295,6 +297,24 @@ Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
                 "XRDHTTP_PELICAN_CACHE_SELF_TEST_FILE_CINFO environment "
                 "variable not set; cannot pass a cache self-test file cinfo");
         }
+        auto authfile_generated_char =
+            getenv("XRDHTTP_PELICAN_AUTHFILE_GENERATED");
+        if (authfile_generated_char) {
+            m_authfile_generated = authfile_generated_char;
+        } else {
+            m_log.Emsg("PelicanHandler",
+                       "XRDHTTP_PELICAN_AUTHFILE_GENERATED environment "
+                       "variable not set; cannot update the authfile");
+        }
+        auto scitokens_generated_char =
+            getenv("XRDHTTP_PELICAN_SCITOKENS_GENERATED");
+        if (scitokens_generated_char) {
+            m_scitokens_generated = scitokens_generated_char;
+        } else {
+            m_log.Emsg("PelicanHandler",
+                       "XRDHTTP_PELICAN_SCITOKENS_GENERATED environment "
+                       "variable not set; cannot update the SciTokens");
+        }
 
         if (configfn && strlen(configfn)) {
             XrdOucGatherConf pelicanhandler_conf("pelican.", &m_log);
@@ -507,7 +527,8 @@ void Handler::ProcessMessage() {
                        "Failed to send signal to self:", strerror(errno));
         }
         return;
-    } else if (data != 1 && data != 2 && data != 4 && data != 5) {
+    } else if (data != 1 && data != 2 && data != 4 && data != 5 && 
+               data != 6 && data != 7) {
         m_log.Emsg("ProcessMessage", "Unknown control message from parent:",
                    std::to_string(data).c_str());
         return;
@@ -535,6 +556,12 @@ void Handler::ProcessMessage() {
     } else if (data == 5) {
         // Pass a cache self test file cinfo
         AtomicOverwriteFile(fd, m_cache_self_test_file_cinfo);
+    } else if (data == 6) {
+        // Pass an auth file
+        AtomicOverwriteFile(fd, m_authfile_generated);
+    } else if (data == 7) {
+        // Pass a scitokens file
+        AtomicOverwriteFile(fd, m_scitokens_generated);
     } else {
         m_log.Emsg("ProcessMessage", "Unknown message from parent:",
                    std::to_string(data).c_str());
