@@ -527,7 +527,7 @@ void Handler::ProcessMessage() {
                        "Failed to send signal to self:", strerror(errno));
         }
         return;
-    } else if (data < 0 || data > 7) {
+    } else if (data <= 0 || data > 7) {
         m_log.Emsg("ProcessMessage", "Unknown control message from parent:",
                    std::to_string(data).c_str());
         return;
