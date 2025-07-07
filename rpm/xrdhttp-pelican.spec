@@ -1,6 +1,6 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.5
+Version: 0.0.7
 Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
@@ -54,6 +54,12 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Mon Jul 7 2025 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.7-1
+- Move authfile and SciTokens config file into the directories owned by xrootd user
+
+* Thu Apr 24 2025 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.6-1
+- Fix EL8 builds
+
 * Tue Apr 22 2025 Matyas Selmeci <mselmeci@wisc.edu> - 0.0.5-1
 - Require XRootD 5.8
  
