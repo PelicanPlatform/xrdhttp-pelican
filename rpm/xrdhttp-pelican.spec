@@ -12,8 +12,8 @@ URL: https://github.com/pelicanplatform/xrdhttp-pelican
 Source0: %{name}-%{version}.tar.gz
 
 %define xrootd_current_major 5
-%define xrootd_current_minor 8
-%define xrootd_next_minor 9
+%define xrootd_current_minor 9
+%define xrootd_next_minor 10
 
 BuildRoot: %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 # Since we rely on the private headers, we don't want the plugin to cross
