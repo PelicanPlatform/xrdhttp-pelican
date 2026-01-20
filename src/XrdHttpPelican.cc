@@ -72,7 +72,7 @@ std::pair<bool, std::string> urlunquote(const std::string_view encoded) {
                 return {false, ""};
             }
             char hex[3] = {encoded[idx + 1], encoded[idx + 2], '\0'};
-            idx += 3;
+            idx += 2; // Advance by 2; the loop will increment by 1
             std::size_t pos;
             try {
                 decoded += static_cast<char>(std::stoi(hex, &pos, 16));
@@ -672,7 +672,7 @@ bool Handler::MatchesPath(const char *verb, const char *path) {
 }
 
 int Handler::ProcessReq(XrdHttpExtReq &req) {
-    auto iter = req.headers.find("xrd-http-query");
+    auto iter = req.headers.find("xrd-http-fullresource");
     if (iter == req.headers.end()) {
         m_log.Emsg("ProcessReq", "Missing internally-generated server data",
                    req.resource.c_str());
@@ -689,8 +689,16 @@ int Handler::ProcessReq(XrdHttpExtReq &req) {
             "Prestage command request requires the `path` query parameter", 0);
         return 1;
     }
+
+    // Skip to the '?' if present (xrd-http-fullresource includes the path)
     std::string_view query_params = query;
+    auto question_pos = query_params.find('?');
+    if (question_pos != std::string_view::npos) {
+        query_params = query_params.substr(question_pos + 1);
+    }
+
     std::string_view path_view;
+    std::string_view authz_view;
     while (!query_params.empty()) {
         if (query_params[0] == '&') {
             query_params = query_params.substr(1);
@@ -708,16 +716,29 @@ int Handler::ProcessReq(XrdHttpExtReq &req) {
             continue;
         }
         auto param_name = param.substr(0, equal_pos);
-        if (param_name != "path") {
-            continue;
+        if (param_name == "path") {
+            path_view = param.substr(equal_pos + 1);
+        } else if (param_name == "authz") {
+            authz_view = param.substr(equal_pos + 1);
         }
-        path_view = param.substr(equal_pos + 1);
     }
     auto [success, path_str] = urlunquote(path_view);
     if (!success) {
         req.SendSimpleResp(400, "Bad Request", nullptr,
                            "Failed to unquote `path` query parameter value", 0);
         return 1;
+    }
+
+    std::string authz_str;
+    if (!authz_view.empty()) {
+        auto [authz_success, authz_decoded] = urlunquote(authz_view);
+        if (!authz_success) {
+            req.SendSimpleResp(
+                400, "Bad Request", nullptr,
+                "Failed to unquote `authz` query parameter value", 0);
+            return 1;
+        }
+        authz_str = authz_decoded;
     }
 
     std::filesystem::path path(path_str);
@@ -727,19 +748,31 @@ int Handler::ProcessReq(XrdHttpExtReq &req) {
                            "Prestage request must be an absolute path", 0);
     }
 
+    // Create environment with authz if it's a Bearer token
+    XrdOucEnv env;
+    XrdOucEnv *env_ptr = nullptr;
+    const std::string bearer_prefix = "Bearer ";
+    if (authz_str.size() > bearer_prefix.size() &&
+        authz_str.compare(0, bearer_prefix.size(), bearer_prefix) == 0) {
+        std::string token = authz_str.substr(bearer_prefix.size());
+        env.Put("authz", token.c_str());
+        env_ptr = &env;
+    }
+
     std::filesystem::path resource_clean(req.resource);
 
     if (!strcmp("/pelican/api/v1.0/prestage", resource_clean.c_str())) {
-        return PrestageReq(path, req);
+        return PrestageReq(path, env_ptr, req);
     } else {
-        return EvictReq(path, req);
+        return EvictReq(path, env_ptr, req);
     }
 }
 
-int Handler::EvictReq(const std::string &path, XrdHttpExtReq &req) {
+int Handler::EvictReq(const std::string &path, XrdOucEnv *env,
+                      XrdHttpExtReq &req) {
     auto &ent = req.GetSecEntity();
     if (m_acc) {
-        if (!m_acc->Access(&ent, path.c_str(), AOP_Delete)) {
+        if (!m_acc->Access(&ent, path.c_str(), AOP_Delete, env)) {
             m_log.Log(LogMask::Info, "evict", "Permission denied to evict path",
                       path.c_str());
             req.SendSimpleResp(403, "Forbidden", nullptr,
@@ -759,7 +792,7 @@ int Handler::EvictReq(const std::string &path, XrdHttpExtReq &req) {
     myArgs[1] = req.headers.find("xrd-http-query")->second.c_str();
     myData.ArgP = myArgs;
     int fsctlRes =
-        m_sfs->FSctl(SFS_FSCTL_PLUGXC, myData, einfo, &req.GetSecEntity());
+        m_sfs->FSctl(SFS_FSCTL_PLUGXC, myData, einfo, &ent);
     bool locked = false;
     if (fsctlRes == SFS_ERROR) {
         auto ec = einfo.getErrInfo();
@@ -782,18 +815,20 @@ int Handler::EvictReq(const std::string &path, XrdHttpExtReq &req) {
     }
 }
 
-int Handler::PrestageReq(const std::string &path, XrdHttpExtReq &req) {
+int Handler::PrestageReq(const std::string &path, XrdOucEnv *env,
+                         XrdHttpExtReq &req) {
     auto &ent = req.GetSecEntity();
+
+    m_log.Log(LogMask::Info, "Prestage", "Handling prestage for path",
+              path.c_str());
+
     if (m_acc) {
-        if (!m_acc->Access(&ent, path.c_str(), AOP_Read)) {
+        if (!m_acc->Access(&ent, path.c_str(), AOP_Read, env)) {
             req.SendSimpleResp(403, "Forbidden", nullptr,
                                "Permission denied to prestage path", 0);
             return 1;
         }
     }
-
-    m_log.Log(LogMask::Debug, "Prestage", "Handling prestage for path",
-              path.c_str());
     std::string user;
     std::string vo{ent.vorg ? ent.vorg : ""};
     if (ent.eaAPI && !ent.eaAPI->Get("token.subject", user)) {
@@ -810,8 +845,8 @@ int Handler::PrestageReq(const std::string &path, XrdHttpExtReq &req) {
         user = vo + ":" + user;
     }
 
-    XrdOucEnv env(nullptr, 0, &ent);
-    PrestageRequestManager::PrestageRequest request(user, path, env);
+    XrdOucEnv prestageEnv(nullptr, 0, &ent);
+    PrestageRequestManager::PrestageRequest request(user, path, prestageEnv);
     if (!m_manager.Produce(request)) {
         req.SendSimpleResp(429, "Too Many Requests", nullptr,
                            "Too many prestage requests at server", 0);

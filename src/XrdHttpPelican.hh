@@ -184,10 +184,10 @@ class Handler : public XrdHttpExtHandler {
     void InfoThread();
 
     // Process a prestage request from the remote client
-    int PrestageReq(const std::string &path, XrdHttpExtReq &req);
+    int PrestageReq(const std::string &path, XrdOucEnv *env, XrdHttpExtReq &req);
 
     // Process a cache eviction request
-    int EvictReq(const std::string &path, XrdHttpExtReq &req);
+    int EvictReq(const std::string &path, XrdOucEnv *env, XrdHttpExtReq &req);
 
     // Indicates whether the plugin is running in a cache.
     static bool m_is_cache;
