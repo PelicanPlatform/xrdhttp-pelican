@@ -1,0 +1,364 @@
+openapi: 3.0.3
+info:
+  title: Pelican Cache Management API
+  description: |
+    HTTP API for managing file prestaging and eviction in Pelican cache servers.
+    
+    This API is implemented as an XRootD HTTP extension handler and provides endpoints
+    for triggering file pulls from remote origins (prestage) and removing files from
+    the local cache (eviction).
+    
+    ## Authentication
+    
+    All endpoints require authentication via one of the following methods:
+    - X.509 client certificates
+    - Bearer tokens (JWT or SciTokens)
+    - Username/password (basic auth)
+    
+    The user's identity and virtual organization (VO) are extracted from the
+    authentication credentials and used for authorization and resource allocation.
+    
+    ## Resource Management
+    
+    Prestage operations are queued per user/VO identity to ensure fair resource
+    allocation. Each identity has:
+    - A dedicated pool of worker threads (configurable via `pelican.worker_max`)
+    - A queue for pending requests (configurable via `pelican.idle_request_max`)
+    - Automatic worker cleanup after idle timeout (configurable via `pelican.worker_idle`)
+    
+  version: 1.0.0
+  contact:
+    name: Pelican Project
+    url: https://pelicanplatform.org/
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+
+servers:
+  - url: https://cache.example.com/pelican/api/v1.0
+    description: Pelican cache server
+
+tags:
+  - name: cache
+    description: Cache management operations
+
+paths:
+  /prestage:
+    get:
+      tags:
+        - cache
+      summary: Prestage a file into the cache
+      description: |
+        Triggers a prestage operation to pull a file from the remote origin into
+        the local cache. The operation runs asynchronously and reports progress
+        using chunked transfer encoding.
+        
+        ## Process Flow
+        
+        1. Request is validated and authorized
+        2. Request is queued for the user's identity
+        3. When a worker becomes available, the file is opened and read in 64KB chunks
+        4. Progress updates are sent every 200ms
+        5. Final status is reported when complete
+        
+        ## Authorization
+        
+        Requires read permission on the requested file path. Permission checks are
+        performed using the configured XRootD authorization plugin (typically
+        XrdAccAuthorize).
+        
+      operationId: prestageFile
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: |
+            Absolute path to the file to prestage. Must start with `/`.
+            URL encoding is required for special characters.
+          schema:
+            type: string
+            pattern: '^/.*'
+            example: /data/experiment/run001/results.root
+          examples:
+            simple:
+              value: /data/file.txt
+              summary: Simple file path
+            nested:
+              value: /store/user/username/dataset/file.root
+              summary: Nested directory path
+            spaces:
+              value: /data/my%20file.txt
+              summary: Path with spaces (URL encoded)
+      
+      responses:
+        '200':
+          description: |
+            Prestage operation completed (may be success or failure).
+            The response uses chunked transfer encoding to provide real-time
+            progress updates.
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: |
+                  Status updates in text format. The response will contain multiple
+                  lines, each representing a status update:
+                  - `status: queued` - Request is queued waiting for a worker
+                  - `status: active,offset=<bytes>` - Actively reading, bytes read so far
+                  - `success: ok` - Prestage completed successfully
+                  - `failure: <code>(<desc>): <details>` - Prestage failed
+              examples:
+                success:
+                  value: |
+                    status: queued
+                    status: active,offset=65536
+                    status: active,offset=131072
+                    success: ok
+                  summary: Successful prestage with progress updates
+                queued:
+                  value: success: ok
+                  summary: Fast prestage (already in cache)
+                failure:
+                  value: |
+                    status: queued
+                    failure: 404(File not found): Object does not exist
+                  summary: File not found
+
+        '400':
+          description: Bad request - invalid parameters
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                missing_path:
+                  value: "Prestage command request requires the `path` query parameter"
+                  summary: Missing path parameter
+                invalid_encoding:
+                  value: "Failed to unquote `path` query parameter value"
+                  summary: Invalid URL encoding
+                relative_path:
+                  value: "Prestage request must be an absolute path"
+                  summary: Path is not absolute
+        
+        '403':
+          description: Forbidden - permission denied
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Permission denied to prestage path"
+        
+        '404':
+          description: Not Found - file does not exist
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "failure: 404(File not found): Object does not exist"
+        
+        '409':
+          description: Conflict - path is a directory
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "failure: 409(Resource is a directory): Object is a directory"
+        
+        '429':
+          description: Too Many Requests - queue is full
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Too many prestage requests at server"
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 60
+              description: Number of seconds to wait before retrying
+        
+        '500':
+          description: Internal Server Error - operation failed
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                io_error:
+                  value: "failure: 500(Internal Server Error): I/O failure when prestaging: Input/output error"
+                  summary: I/O error during read
+                unknown:
+                  value: "failure: 500(Internal Server Error): Unknown error when preparing for prestage"
+                  summary: Unknown error
+
+      security:
+        - bearerAuth: []
+        - certificateAuth: []
+        - basicAuth: []
+
+  /evict:
+    get:
+      tags:
+        - cache
+      summary: Evict a file from the cache
+      description: |
+        Removes a file from the local cache, freeing up storage space. The operation
+        fails if the file is currently in use (locked) by active transfers.
+        
+        ## Process Flow
+        
+        1. Request is validated and authorized
+        2. Eviction command is sent to the filesystem plugin
+        3. Plugin checks if the file is locked
+        4. If not locked, the file is removed from cache
+        
+        ## Authorization
+        
+        Requires delete permission on the requested file path. Permission checks are
+        performed using the configured XRootD authorization plugin.
+        
+      operationId: evictFile
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: |
+            Absolute path to the file to evict. Must start with `/`.
+            URL encoding is required for special characters.
+          schema:
+            type: string
+            pattern: '^/.*'
+            example: /data/experiment/run001/results.root
+          examples:
+            simple:
+              value: /data/file.txt
+              summary: Simple file path
+            nested:
+              value: /store/user/username/dataset/file.root
+              summary: Nested directory path
+      
+      responses:
+        '200':
+          description: File evicted successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Cache eviction successful"
+        
+        '400':
+          description: Bad request - invalid parameters
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                missing_path:
+                  value: "Eviction request requires the `path` query parameter"
+                  summary: Missing path parameter
+                invalid_encoding:
+                  value: "Failed to unquote `path` query parameter value"
+                  summary: Invalid URL encoding
+        
+        '403':
+          description: Forbidden - permission denied
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Permission denied to evict path"
+        
+        '423':
+          description: Locked - file is in use
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Cannot evict file that is in-use by the cache"
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 30
+              description: Number of seconds to wait before retrying
+        
+        '500':
+          description: Internal Server Error - operation failed
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Eviction operation failed"
+
+      security:
+        - bearerAuth: []
+        - certificateAuth: []
+        - basicAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Bearer token authentication using JWT or SciTokens.
+        The token must contain claims for user identity and optionally
+        virtual organization (VO) membership.
+    
+    certificateAuth:
+      type: mutualTLS
+      description: |
+        X.509 client certificate authentication. The certificate subject
+        and issuer are used to determine the user's identity and VO membership.
+    
+    basicAuth:
+      type: http
+      scheme: basic
+      description: |
+        HTTP Basic authentication using username and password.
+        Note: Not recommended for production use without TLS.
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: integer
+          description: HTTP status code
+      required:
+        - error
+        - code
+
+  parameters:
+    pathParam:
+      name: path
+      in: query
+      required: true
+      description: Absolute path to the file
+      schema:
+        type: string
+        pattern: '^/.*'
+
+  examples:
+    prestageSuccess:
+      summary: Successful prestage
+      value: |
+        status: queued
+        status: active,offset=1048576
+        status: active,offset=2097152
+        success: ok
+    
+    evictSuccess:
+      summary: Successful eviction
+      value: "Cache eviction successful"
+    
+    evictLocked:
+      summary: File is locked
+      value: "Cannot evict file that is in-use by the cache"
+
