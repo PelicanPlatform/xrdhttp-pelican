@@ -88,6 +88,10 @@ bool ParseHexChar(char c, int *value) {
 
 namespace {
 
+// Global flag indicating whether addr2line/atos is available
+// Set during signal handler installation
+static bool g_symbolizer_available = false;
+
 // Helper to write a number in hex format to file descriptor (async-signal-safe)
 void WriteHex(int fd, uintptr_t value) {
     char buf[32];
@@ -122,6 +126,45 @@ void WriteDecimal(int fd, int value) {
     }
 
     _ = write(fd, buf, pos);
+}
+
+// Check if an executable exists in PATH (called during initialization, not in
+// signal handler)
+bool IsExecutableAvailable(const char *exe_name) {
+    // Try to execute with --version or similar to test availability
+    // We use access() with X_OK to check if executable exists
+    // First check common locations
+    const char *paths[] = {"/usr/bin/", "/bin/", "/usr/local/bin/", nullptr};
+
+    char full_path[256];
+    for (int i = 0; paths[i] != nullptr; i++) {
+        snprintf(full_path, sizeof(full_path), "%s%s", paths[i], exe_name);
+        if (access(full_path, X_OK) == 0) {
+            return true;
+        }
+    }
+
+    // Also try direct access (might be in PATH but not in standard locations)
+    // We do this by forking and trying to exec
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child process
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execlp(exe_name, exe_name, "--version", (char *)nullptr);
+        _exit(1);
+    } else if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+        // If exec succeeded, the command exists
+        return WIFEXITED(status);
+    }
+
+    return false;
 }
 
 } // anonymous namespace
@@ -253,6 +296,20 @@ void PrintDetailedStackTrace(void **trace, int size) {
         // Calculate offset from base address (handle ASLR)
         uintptr_t offset = addr - base_addr;
 
+        // If addr2line is not available, just print module path and offset
+        if (!g_symbolizer_available) {
+            // Write module path
+            int path_len = 0;
+            while (module_path[path_len] != '\0' && path_len < 256) {
+                path_len++;
+            }
+            _ = write(STDERR_FILENO, module_path, path_len);
+            _ = write(STDERR_FILENO, " ", 1);
+            WriteHex(STDERR_FILENO, offset);
+            _ = write(STDERR_FILENO, "\n", 1);
+            continue;
+        }
+
         // Create pipe for addr2line input
         int pipe_in[2];
         if (pipe(pipe_in) != 0) {
@@ -341,6 +398,33 @@ void PrintDetailedStackTrace(void **trace, int size) {
     // pre-fetching symbols.
 
     for (int i = 0; i < size; i++) {
+        // If atos is not available, use dladdr for basic info
+        if (!g_symbolizer_available) {
+            write(STDERR_FILENO, "#", 1);
+            WriteDecimal(STDERR_FILENO, i);
+            write(STDERR_FILENO, " ", 1);
+
+            Dl_info info;
+            if (dladdr(trace[i], &info) && info.dli_fname) {
+                // Write library name
+                const char *fname = info.dli_fname;
+                int fname_len = 0;
+                while (fname[fname_len] != '\0')
+                    fname_len++;
+                write(STDERR_FILENO, fname, fname_len);
+                write(STDERR_FILENO, " ", 1);
+
+                // Write offset from library base
+                uintptr_t offset =
+                    (uintptr_t)trace[i] - (uintptr_t)info.dli_fbase;
+                WriteHex(STDERR_FILENO, offset);
+            } else {
+                WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
+            }
+            write(STDERR_FILENO, "\n", 1);
+            continue;
+        }
+
         int pipe_fds[2];
         if (pipe(pipe_fds) < 0) {
             // Fallback to raw address
@@ -503,6 +587,15 @@ void SignalHandler(int sig) {
 namespace XrdHttpPelican {
 
 void InstallSignalHandlers() {
+    // Check if symbolizer tools are available
+#ifdef __linux__
+    g_symbolizer_available = IsExecutableAvailable("addr2line");
+#elif defined(__APPLE__)
+    g_symbolizer_available = IsExecutableAvailable("atos");
+#else
+    g_symbolizer_available = false;
+#endif
+
     struct sigaction sa;
     sa.sa_handler = SignalHandler;
     sigemptyset(&sa.sa_mask);
