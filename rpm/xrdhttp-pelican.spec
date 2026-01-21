@@ -1,6 +1,6 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.8
+Version: 0.0.9
 Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
@@ -54,6 +54,12 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Wed Jan 21 2026 Brian Bockelman <bbockelman@morgridge.org> - 0.0.9-1
+- Fix permission issues for prestage when used with token auth
+- Add support for re-exec'ing the xrootd binary, allowing it to reload
+  the configuration in-place
+- Add a signal handler that prints out stack traces on crash
+
 * Mon Dec 08 2025 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.8-1
 - Require XRootD 5.9
 
@@ -65,7 +71,7 @@ rm -rf $RPM_BUILD_ROOT
 
 * Tue Apr 22 2025 Matyas Selmeci <mselmeci@wisc.edu> - 0.0.5-1
 - Require XRootD 5.8
- 
+
 * Sat Mar 1 2025 Brian Bockelman <bbockelman@morgridge.org> - 0.0.4-1
 - Add ability to prestage and evict objects from cache.
 
