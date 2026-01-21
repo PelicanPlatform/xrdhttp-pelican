@@ -36,7 +36,7 @@ add_subdirectory(tests)
 
 include_directories(${XRootD_INCLUDE_DIR})
 
-add_library(XrdHttpPelicanObj OBJECT src/XrdHttpPelican.cc src/Prestage.cc)
+add_library(XrdHttpPelicanObj OBJECT src/XrdHttpPelican.cc src/Prestage.cc src/SignalHandlers.cc)
 target_link_libraries(XrdHttpPelicanObj ${XRootD_HTTP_LIBRARIES} ${XRootD_UTILS_LIBRARIES} Threads::Threads std::filesystem)
 set_target_properties(XrdHttpPelicanObj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

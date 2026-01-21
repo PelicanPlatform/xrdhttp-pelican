@@ -183,6 +183,9 @@ class Handler : public XrdHttpExtHandler {
     // This allows XRootD to auto-info when Pelican goes away.
     void InfoThread();
 
+    // Re-exec the current process
+    void ReExec();
+
     // Process a prestage request from the remote client
     int PrestageReq(const std::string &path, XrdOucEnv *env, XrdHttpExtReq &req);
 
@@ -212,9 +215,12 @@ class Handler : public XrdHttpExtHandler {
 
     // The location of the generated auth file
     static std::string m_authfile_generated;
-    
+
     // The location of the generated scitokens file
     static std::string m_scitokens_generated;
+
+    // The executable path for re-exec
+    static std::string m_executable_path;
 
     // Send a SIGTERM to self, followed by a 5 second sleep, followed
     // by a SIGKILL (until the process exits).

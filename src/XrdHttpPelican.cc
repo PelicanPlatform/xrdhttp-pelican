@@ -17,6 +17,7 @@
  ***************************************************************/
 
 #include "XrdHttpPelican.hh"
+#include "SignalHandlers.hh"
 
 #include <XrdAcc/XrdAccAuthorize.hh>
 #include <XrdOfs/XrdOfsFSctl_PI.hh>
@@ -32,11 +33,18 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <limits.h>
 #include <poll.h>
-#include <signal.h>
 #include <stdio.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
+#ifdef __APPLE__
+#include <crt_externs.h>
+#include <mach-o/dyld.h>
+#endif
+
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -54,6 +62,7 @@ std::string Handler::m_cache_self_test_file;
 std::string Handler::m_cache_self_test_file_cinfo;
 std::string Handler::m_authfile_generated;
 std::string Handler::m_scitokens_generated;
+std::string Handler::m_executable_path;
 std::filesystem::path Handler::m_api_root{"/api/v1.0/pelican"};
 decltype(Handler::m_acc) Handler::m_acc{nullptr};
 decltype(Handler::m_is_cache) Handler::m_is_cache{false};
@@ -247,6 +256,31 @@ Handler::~Handler() {}
 Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
     : m_log(*log), m_manager(*xrdEnv, *log) {
     std::call_once(m_info_launch, [&] {
+        // Install signal handlers for crash reporting
+        InstallSignalHandlers();
+        m_log.Emsg("PelicanHandler",
+                   "Signal handlers installed for crash reporting");
+
+        // Store the executable path for potential re-exec
+#ifdef __APPLE__
+        char exe_path[PATH_MAX];
+        uint32_t size = sizeof(exe_path);
+        if (_NSGetExecutablePath(exe_path, &size) == 0) {
+            m_executable_path = exe_path;
+        }
+#else
+        char exe_path[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len != -1) {
+            exe_path[len] = '\0';
+            m_executable_path = exe_path;
+        }
+#endif
+        if (!m_executable_path.empty()) {
+            m_log.Emsg("PelicanHandler", "Executable path saved for re-exec:",
+                       m_executable_path.c_str());
+        }
+
         auto fd_char = getenv("XRDHTTP_PELICAN_INFO_FD");
         if (fd_char) {
             m_log.Emsg("PelicanHandler", "Will listen for command on FD",
@@ -527,7 +561,11 @@ void Handler::ProcessMessage() {
                        "Failed to send signal to self:", strerror(errno));
         }
         return;
-    } else if (data <= 0 || data > 7) {
+    } else if (data == 8) {
+        // Command to re-exec the process
+        ReExec();
+        return;
+    } else if (data <= 0 || data > 8) {
         m_log.Emsg("ProcessMessage", "Unknown control message from parent:",
                    std::to_string(data).c_str());
         return;
@@ -644,6 +682,70 @@ void Handler::AtomicOverwriteFile(int fd, const std::string &loc) {
                 "AtomicOverwrite",
                 "Failed to unlink temporary file on cleanup:", strerror(errno));
         }
+    }
+}
+
+void Handler::ReExec() {
+    if (m_executable_path.empty()) {
+        m_log.Emsg("ReExec", "Cannot re-exec: executable path not available");
+        return;
+    }
+
+    m_log.Emsg("ReExec", "Re-executing process:", m_executable_path.c_str());
+
+    // Get current process arguments
+    std::vector<std::string> args;
+
+#ifdef __APPLE__
+    // On macOS, use _NSGetArgv and _NSGetArgc
+    char ***argv_ptr = _NSGetArgv();
+    int *argc_ptr = _NSGetArgc();
+
+    if (argv_ptr && argc_ptr) {
+        char **argv = *argv_ptr;
+        int argc = *argc_ptr;
+        for (int i = 0; i < argc; i++) {
+            args.push_back(argv[i]);
+        }
+    }
+#else
+    // On Linux, read /proc/self/cmdline
+    std::ifstream cmdline("/proc/self/cmdline");
+    if (cmdline.is_open()) {
+        std::string arg;
+        while (std::getline(cmdline, arg, '\0')) {
+            if (!arg.empty()) {
+                args.push_back(arg);
+            }
+        }
+        cmdline.close();
+    }
+#endif
+
+    if (args.empty()) {
+        m_log.Emsg("ReExec", "Failed to retrieve process arguments");
+        // Fall back to simple exec with just the executable
+        if (execl(m_executable_path.c_str(), m_executable_path.c_str(),
+                  (char *)nullptr) == -1) {
+            m_log.Emsg("ReExec", "Failed to re-exec process:", strerror(errno));
+        }
+        return;
+    }
+
+    // Convert to char* array for execv
+    std::vector<char *> argv;
+    for (auto &arg : args) {
+        argv.push_back(const_cast<char *>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+
+    // Flush all file descriptors before exec
+    sync();
+
+    // Attempt to re-exec the process with the same arguments
+    if (execv(m_executable_path.c_str(), argv.data()) == -1) {
+        m_log.Emsg("ReExec", "Failed to re-exec process:", strerror(errno));
+        // If exec fails, the process continues normally
     }
 }
 
