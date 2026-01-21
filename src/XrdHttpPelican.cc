@@ -17,6 +17,7 @@
  ***************************************************************/
 
 #include "XrdHttpPelican.hh"
+#include "SignalHandlers.hh"
 
 #include <XrdAcc/XrdAccAuthorize.hh>
 #include <XrdOfs/XrdOfsFSctl_PI.hh>
@@ -34,7 +35,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
-#include <signal.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -256,7 +256,12 @@ Handler::~Handler() {}
 Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
     : m_log(*log), m_manager(*xrdEnv, *log) {
     std::call_once(m_info_launch, [&] {
-    // Store the executable path for potential re-exec
+        // Install signal handlers for crash reporting
+        InstallSignalHandlers();
+        m_log.Emsg("PelicanHandler",
+                   "Signal handlers installed for crash reporting");
+
+        // Store the executable path for potential re-exec
 #ifdef __APPLE__
         char exe_path[PATH_MAX];
         uint32_t size = sizeof(exe_path);
