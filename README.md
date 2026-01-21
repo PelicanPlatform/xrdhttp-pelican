@@ -145,6 +145,12 @@ The handler supports the following control messages:
    - Atomically replaces the existing SciTokens file
    - Enables dynamic token configuration updates without server restart
 
+8. **Process Re-exec (Message Type 8)**
+   - Triggers a re-execution of the XRootD process
+   - Preserves the environment and replaces the current process image
+   - Useful for applying updates that require a full restart without service interruption
+   - Falls back gracefully if re-exec is not possible
+
 ### Implementation Details
 
 The message handler:
@@ -233,6 +239,16 @@ curl -X GET "https://cache.example.com/pelican/api/v1.0/evict?path=%2Fdata%2Ffil
 ## OpenAPI Specification
 
 See [pelican-api.yaml](pelican-api.yaml) for the complete OpenAPI 3.0 specification of the prestage and eviction APIs.
+
+## Testing
+
+To run the tests, build with testing enabled (`-DENABLE_TESTS=true`) and use `ctest`:
+
+Run with:
+```bash
+cd build
+ctest
+```
 
 ## License
 
