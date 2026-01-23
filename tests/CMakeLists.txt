@@ -25,6 +25,16 @@ target_include_directories( XrdOssSlowOpen PRIVATE ${XRootD_INCLUDE_DIRS} )
 target_link_libraries( XrdOssSlowOpen ${XRootD_UTILS_LIBRARIES} ${XRootD_SERVER_LIBRARIES} )
 set_target_properties( XrdOssSlowOpen PROPERTIES OUTPUT_NAME "XrdOssSlowOpen-${XRootD_PLUGIN_VERSION}" SUFFIX ".so" )
 
+# SciTokens utilities for testing
+find_package(OpenSSL REQUIRED)
+find_library(SCITOKENS_LIB NAMES SciTokens scitokens REQUIRED)
+
+add_executable(xrdscitokens-create-jwks xrdscitokens-create-jwks.cc)
+target_link_libraries(xrdscitokens-create-jwks OpenSSL::SSL OpenSSL::Crypto)
+
+add_executable(xrdscitokens-create-token xrdscitokens-create-token.cc)
+target_link_libraries(xrdscitokens-create-token ${SCITOKENS_LIB})
+
 gtest_discover_tests(xrdhttp-pelican-test)
 
 # Discover stack trace unit tests - no fixture dependency

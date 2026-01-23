@@ -214,26 +214,88 @@ EOF
 
 cat > "$XROOTD_CONFIGDIR/authdb" <<EOF
 
-u * / lr
+u * /public lr /.well-known lr
+
 
 EOF
 
 cat > "$XROOTD_CONFIGDIR/scitokens.cfg" <<EOF
 
 [Global]
-audience = https://demo.scitokens.org
+audience = https://localhost:9443
 
-[Issuer DEMO]
-issuer = https://demo.scitokens.org
-base_path = /
+[Issuer LocalTest]
+issuer = https://localhost:9443
+base_path = /protected
 
 EOF
+
+######################
+# Setup token issuer #
+######################
+
+# Create .well-known directory for JWKS and OpenID configuration
+mkdir -p "$XROOTD_EXPORTDIR/.well-known" || exit 1
+
+# Generate EC keys for the issuer
+if ! openssl ecparam -name prime256v1 -genkey -noout -out "$RUNDIR/issuer_private.pem" 2>> "$BINARY_DIR/tests/$TEST_NAME/server.log"; then
+  echo "Failed to generate EC private key"
+  exit 1
+fi
+
+if ! openssl ec -in "$RUNDIR/issuer_private.pem" -pubout -out "$RUNDIR/issuer_public.pem" 2>> "$BINARY_DIR/tests/$TEST_NAME/server.log"; then
+  echo "Failed to generate EC public key"
+  exit 1
+fi
+
+# Create JWKS file
+if ! "$BINARY_DIR/tests/xrdscitokens-create-jwks" "$RUNDIR/issuer_public.pem" "$XROOTD_EXPORTDIR/.well-known/issuer.jwks" "test_key" >> "$BINARY_DIR/tests/$TEST_NAME/server.log" 2>&1; then
+  echo "Failed to generate JWKS file"
+  exit 1
+fi
+
+echo "JWKS file created at $XROOTD_EXPORTDIR/.well-known/issuer.jwks"
+
+# Pre-load the JWKS into SciTokens cache to avoid HTTPS fetch issues
+# This is needed because older versions of libscitokens-cpp don't support custom CAs
+mkdir -p "$RUNDIR/issuer"
+cat > "$RUNDIR/issuer/sql" << EOF
+BEGIN TRANSACTION;
+CREATE TABLE keycache (issuer text UNIQUE PRIMARY KEY NOT NULL,keys text NOT NULL);
+INSERT INTO keycache VALUES('https://localhost:9443','{"expires":$(($(date '+%s') + 3600)),"jwks":$(cat "$XROOTD_EXPORTDIR/.well-known/issuer.jwks"),"next_update":$(($(date '+%s') + 3600))}');
+COMMIT;
+EOF
+
+XDG_CACHE_HOME="$RUNDIR/tmp"
+rm -rf "$XDG_CACHE_HOME"
+mkdir -p "$XDG_CACHE_HOME/scitokens" || exit 1
+
+if ! sqlite3 "$XDG_CACHE_HOME/scitokens/scitokens_cpp.sqllite" < "$RUNDIR/issuer/sql"; then
+  echo "Failed to generate sqlite database"
+  exit 1
+fi
+
+echo "Pre-loaded JWKS into SciTokens cache"
+
+export XDG_CACHE_HOME
 
 # Export some data through the origin
 echo "Hello, World" > "$XROOTD_EXPORTDIR/hello_world.txt"
 
+# Create a 256KB file for prestaging tests
+dd if=/dev/urandom of="$XROOTD_EXPORTDIR/large_file.txt" bs=1024 count=256 2> /dev/null
+
+# Create public directory for non-token files
+mkdir -p "$XROOTD_EXPORTDIR/public"
+mv "$XROOTD_EXPORTDIR/hello_world.txt" "$XROOTD_EXPORTDIR/public/"
+mv "$XROOTD_EXPORTDIR/large_file.txt" "$XROOTD_EXPORTDIR/public/"
+
+# Create token-protected directory and 256KB test file
+mkdir -p "$XROOTD_EXPORTDIR/protected"
+dd if=/dev/urandom of="$XROOTD_EXPORTDIR/protected/token_test.txt" bs=1024 count=256 2> /dev/null
+
 for idx in $(seq 1 10); do
-  dd if=/dev/urandom of="$XROOTD_EXPORTDIR/random_data_$idx.txt" bs=1024 count=4096 2> /dev/null
+  dd if=/dev/urandom of="$XROOTD_EXPORTDIR/public/random_data_$idx.txt" bs=1024 count=4096 2> /dev/null
 done
 
 #####################
@@ -251,13 +313,40 @@ fi
 ORIGIN_URL="https://$HOSTNAME:$ORIGIN_PORT/"
 echo "origin started at $ORIGIN_URL"
 
+# Create OpenID configuration with actual URL
+cat > "$XROOTD_EXPORTDIR/.well-known/openid-configuration" <<EOF
+{
+  "issuer": "https://localhost:9443",
+  "jwks_uri": "https://localhost:9443/.well-known/issuer.jwks"
+}
+EOF
+
+echo "OpenID configuration created"
+
+# Generate test tokens
+if ! "$BINARY_DIR/tests/xrdscitokens-create-token" \
+    "$RUNDIR/issuer_public.pem" "$RUNDIR/issuer_private.pem" "test_key" \
+    "https://localhost:9443" "read:/" 600 > "$RUNDIR/read_token" 2>> "$BINARY_DIR/tests/$TEST_NAME/server.log"; then
+  echo "Failed to generate read token"
+  exit 1
+fi
+
+if ! "$BINARY_DIR/tests/xrdscitokens-create-token" \
+    "$RUNDIR/issuer_public.pem" "$RUNDIR/issuer_private.pem" "test_key" \
+    "https://localhost:9443" "write:/" 600 > "$RUNDIR/write_token" 2>> "$BINARY_DIR/tests/$TEST_NAME/server.log"; then
+  echo "Failed to generate write token"
+  exit 1
+fi
+
+echo "Test tokens generated at $RUNDIR/read_token and $RUNDIR/write_token"
+
 #####################################
 # Write out the cache configuration #
 #####################################
 
 cat > "$XROOTD_CONFIGDIR/cache-authdb" <<EOF
 
-u * / a
+u * /public a /.well-known a
 
 EOF
 
@@ -297,7 +386,7 @@ http.header2cgi X-Pelican-Timeout pelican.timeout
 oss.localroot $XROOTD_CACHEDIR
 
 pfc.blocksize 128k
-pfc.prefetch 20
+pfc.prefetch 0
 pfc.writequeue 16 4
 pfc.ram 4g
 pss.setopt DebugLevel 4
@@ -339,6 +428,8 @@ X509_CA_FILE=$XROOTD_CONFIGDIR/tlsca.pem
 XROOTD_CACHEDIR=$XROOTD_CACHEDIR
 XROOTD_CONFIGDIR=$XROOTD_CONFIGDIR
 RUNDIR=$RUNDIR
+READ_TOKEN=$RUNDIR/read_token
+WRITE_TOKEN=$RUNDIR/write_token
 EOF
 
 echo "Test environment written to $BINARY_DIR/tests/$TEST_NAME/setup.sh"

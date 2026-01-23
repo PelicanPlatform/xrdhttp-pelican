@@ -54,14 +54,32 @@ void PrestageRequestManager::PrestageQueue::PrestageWorker::Prestage(
     PrestageRequestManager::PrestageRequest &request) {
     auto fp = m_oss.newFile("Prestage Worker");
 
-    ssize_t rc =
-        fp->Open(request.GetPath().c_str(), O_RDONLY, 0, request.GetEnv());
+    m_queue.m_parent.m_log.Log(LogMask::Debug, "PrestageWorker",
+                               "Handling request for",
+                               request.GetPath().c_str());
+
+    auto authz = request.GetEnv().Get("authz");
+    std::string path = request.GetPath();
+    if (authz) {
+        // Add authz as a query parameter to path
+        if (path.find('?') != std::string::npos) {
+            path += "&authz=";
+        } else {
+            path += "?authz=";
+        }
+        path += authz;
+    }
+
+    ssize_t rc = fp->Open(path.c_str(), O_RDONLY, 0, request.GetEnv());
     if (rc < 0) {
         if (rc == -ENOENT) {
             request.SetDone(404, "Object does not exist");
             return;
         } else if (rc == -EISDIR) {
             request.SetDone(409, "Object is a directory");
+            return;
+        } else if (rc == -EACCES) {
+            request.SetDone(403, "Permission denied");
             return;
         } else {
             request.SetDone(500, "Unknown error when preparing for prestage");
@@ -70,20 +88,35 @@ void PrestageRequestManager::PrestageQueue::PrestageWorker::Prestage(
     }
     off_t off{0};
     auto lastUpdate = std::chrono::steady_clock::now();
-    while ((rc = fp->Read(off, 64 * 1024)) > 0) {
+    std::unique_ptr<char[]> buffer(new char[64 * 1024]);
+    while ((rc = fp->Read(buffer.get(), off, 64 * 1024)) > 0) {
         off += rc;
         if (std::chrono::steady_clock::now() - lastUpdate >
             std::chrono::milliseconds(200)) {
             request.SetProgress(off);
+            m_queue.m_parent.m_log.Log(LogMask::Debug, "PrestageWorker",
+                                       "Request prestaged",
+                                       std::to_string(off).c_str());
         }
     }
     fp->Close();
     if (rc < 0) {
         std::stringstream ss;
         ss << "I/O failure when prestaging: " << strerror(-rc);
-        request.SetDone(500, ss.str());
+        m_queue.m_parent.m_log.Log(LogMask::Debug, "PrestageWorker",
+                                   request.GetPath().c_str(), ss.str().c_str());
+        int status = 500;
+        if (rc == -EACCES) {
+            status = 403;
+        } else if (rc == -ENOENT) {
+            status = 404;
+        }
+        request.SetDone(status, ss.str());
         return;
     }
+    m_queue.m_parent.m_log.Log(LogMask::Debug, "PrestageWorker",
+                               "Prestage request successful",
+                               request.GetPath().c_str());
     request.SetDone(200, "Prestage successful");
     return;
 }
