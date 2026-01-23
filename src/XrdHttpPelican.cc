@@ -961,6 +961,8 @@ int Handler::PrestageReq(const std::string &path, XrdOucEnv *env,
     int status;
     while ((status = request.WaitFor(std::chrono::seconds(2))) <= 0) {
         if (!sent_resp) {
+            m_log.Log(LogMask::Debug, "Prestage",
+                      "Sending 200 response for prestage of", path.c_str());
             if (req.StartChunkedResp(200, "OK", nullptr) < 0) {
                 m_log.Emsg("ProcessReq", "Failed to start response to client");
                 return -1;
@@ -971,7 +973,10 @@ int Handler::PrestageReq(const std::string &path, XrdOucEnv *env,
         if (request.IsActive()) {
             resp = "status: active,offset=" +
                    std::to_string(request.GetProgress());
+            m_log.Log(LogMask::Debug, "Prestage", path.c_str(), resp.c_str());
         } else {
+            m_log.Log(LogMask::Debug, "Prestage", "Path", path.c_str(),
+                      "prestage is queued");
             resp = "status: queued";
         }
         if (req.ChunkResp(resp.c_str(), resp.size()) < 0) {
@@ -1004,14 +1009,22 @@ int Handler::PrestageReq(const std::string &path, XrdOucEnv *env,
         status = 500;
     }
     if (!sent_resp) {
-        return req.SendSimpleResp(status, desc.c_str(), nullptr, nullptr, 0);
+        m_log.Log(LogMask::Debug, "Prestage", path.c_str(),
+                  "prestage result is", desc.c_str());
+        return req.SendSimpleResp(status, desc.c_str(), nullptr,
+                                  request.GetResults().c_str(),
+                                  request.GetResults().size());
     } else {
         int rc;
         if (status >= 300) {
             auto resp = "failure: " + std::to_string(status) + "(" + desc +
                         "): " + request.GetResults();
+            m_log.Log(LogMask::Debug, "Prestage", path.c_str(),
+                      "prestage result is", resp.c_str());
             rc = req.ChunkResp(resp.c_str(), resp.size());
         } else {
+            m_log.Log(LogMask::Debug, "Prestage", "Path", path.c_str(),
+                      "prestage is successful");
             rc = req.ChunkResp("success: ok", 0);
         }
         if (rc < 0) {
