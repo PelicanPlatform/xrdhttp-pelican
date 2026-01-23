@@ -23,7 +23,7 @@ fi
 #############################
 echo "Running $TEST_NAME - origin download"
 
-CONTENTS=$(curl --cacert $X509_CA_FILE -v --fail "$ORIGIN_URL/hello_world.txt" 2> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+CONTENTS=$(curl --cacert $X509_CA_FILE -v --fail "$ORIGIN_URL/public/hello_world.txt" 2> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 CURL_EXIT=$?
 if [ $CURL_EXIT -ne 0 ]; then
   echo "Download of hello-world text failed"
@@ -37,7 +37,7 @@ fi
 
 echo "Running $TEST_NAME - missing object"
 
-HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$ORIGIN_URL/missing.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$ORIGIN_URL/public/missing.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 if [ "$HTTP_CODE" -ne 404 ]; then
   echo "Expected HTTP code is 404; actual was $HTTP_CODE"
   exit 1
@@ -48,7 +48,7 @@ fi
 ############################
 echo "Running $TEST_NAME - cache download"
 
-CONTENTS=$(curl --cacert $X509_CA_FILE -v --fail "$CACHE_URL/hello_world.txt" 2> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+CONTENTS=$(curl --cacert $X509_CA_FILE -v --fail "$CACHE_URL/public/hello_world.txt" 2> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 CURL_EXIT=$?
 if [ $CURL_EXIT -ne 0 ]; then
   echo "Download of hello-world text failed"
@@ -62,7 +62,7 @@ fi
 
 echo "Running $TEST_NAME - missing object"
 
-HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/missing.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/public/missing.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 if [ "$HTTP_CODE" -ne 404 ]; then
   echo "Expected HTTP code is 404; actual was $HTTP_CODE"
   exit 1
@@ -74,7 +74,7 @@ fi
 
 echo "Ensure the object is cached in the local directory"
 
-CONTENTS=$(cat "$XROOTD_CACHEDIR/hello_world.txt")
+CONTENTS=$(cat "$XROOTD_CACHEDIR/public/hello_world.txt")
 
 if [ "$CONTENTS" != "Hello, World" ]; then
   echo "Cached hello-world text is incorrect: $CONTENTS"
@@ -83,13 +83,13 @@ fi
 
 echo "Running $TEST_NAME - evict from cache"
 
-HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/evict?path=/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/evict?path=/public/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 if [ "$HTTP_CODE" -ne 200 ]; then
   echo "Expected HTTP code is 200; actual was $HTTP_CODE"
   exit 1
 fi
 
-if [ -f "$XROOTD_CACHEDIR/hello_world.txt" ]; then
+if [ -f "$XROOTD_CACHEDIR/public/hello_world.txt" ]; then
   echo "Cached hello-world text was not evicted"
   exit 1
 fi
@@ -100,13 +100,13 @@ fi
 
 echo "Running $TEST_NAME - prestage to cache"
 
-HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/prestage?path=/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/prestage?path=/public/hello_world.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
 if [ "$HTTP_CODE" -ne 200 ]; then
   echo "Expected HTTP code is 200; actual was $HTTP_CODE"
   exit 1
 fi
 
-if ! grep -q "pelican_Prestage: Handling prestage for path /hello_world.txt" "$BINARY_DIR/tests/$TEST_NAME/cache.log"; then
+if ! grep -q "pelican_Prestage: Handling prestage for path /public/hello_world.txt" "$BINARY_DIR/tests/$TEST_NAME/cache.log"; then
   echo "Prestage request was not logged"
   exit 1
 fi
@@ -116,7 +116,7 @@ if ! grep -q "pelican_RequestManager: Created new prestage queue for nobody" "$B
   exit 1
 fi
 
-if [ ! -f "$XROOTD_CACHEDIR/hello_world.txt" ]; then
+if [ ! -f "$XROOTD_CACHEDIR/public/hello_world.txt" ]; then
   echo "hello-world text was not prestaged"
   exit 1
 fi
@@ -128,6 +128,135 @@ if ! grep -q "pelican_PrestageRequestManager: Prestage pool nobody is idle and a
   exit 1
 fi
 
+####################################################
+# Test prestage with Age header verification       #
+####################################################
+
+echo "Running $TEST_NAME - prestage with Age header verification"
+
+# First, ensure the file is not in the cache
+rm -f "$XROOTD_CACHEDIR/public/large_file.txt"
+
+# HEAD request before prestage - Age header should not be present
+echo "Checking Age header before prestage..."
+HTTP_HEADERS=$(curl --cacert $X509_CA_FILE --head -v "$CACHE_URL/public/large_file.txt" 2>&1)
+if echo "$HTTP_HEADERS" | grep -qi "^< Age:"; then
+  echo "Age header unexpectedly present before prestaging"
+  exit 1
+fi
+
+# Prestage the file
+echo "Prestaging large_file.txt..."
+HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/prestage?path=/public/large_file.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+if [ "$HTTP_CODE" -ne 200 ]; then
+  echo "Expected HTTP code is 200 for prestage; actual was $HTTP_CODE"
+  exit 1
+fi
+
+# Verify the file was actually prestaged to disk
+if [ ! -f "$XROOTD_CACHEDIR/public/large_file.txt" ]; then
+  echo "large_file.txt was not prestaged to cache"
+  exit 1
+fi
+
+# Verify file size is correct (256KB)
+FILE_SIZE=$(stat -c%s "$XROOTD_CACHEDIR/public/large_file.txt" 2>/dev/null || stat -f%z "$XROOTD_CACHEDIR/public/large_file.txt" 2>/dev/null)
+EXPECTED_SIZE=$((256 * 1024))
+if [ "$FILE_SIZE" -ne "$EXPECTED_SIZE" ]; then
+  echo "Prestaged file size is incorrect. Expected: $EXPECTED_SIZE, Actual: $FILE_SIZE"
+  exit 1
+fi
+
+# HEAD request after prestage - Age header should be present
+echo "Checking Age header after prestage..."
+HTTP_HEADERS=$(curl --cacert $X509_CA_FILE --head -v "$CACHE_URL/public/large_file.txt" 2>&1)
+if ! echo "$HTTP_HEADERS" | grep -qi "^< Age:"; then
+  echo "Age header not present after prestaging - data may not be cached"
+  echo "Headers received:"
+  echo "$HTTP_HEADERS" | grep "^<"
+  exit 1
+fi
+
+echo "Successfully verified Age header behavior with prestaging"
+
+#########################################################
+# Test prestage with SciToken authentication           #
+#########################################################
+
+echo "Running $TEST_NAME - prestage with token authentication"
+
+# Verify token is available
+if [ ! -f "$READ_TOKEN" ]; then
+  echo "Read token not found at $READ_TOKEN"
+  exit 1
+fi
+
+# First, ensure the file is not in the cache
+rm -f "$XROOTD_CACHEDIR/protected/token_test.txt"
+
+# Try to access without token - should fail with 403
+HTTP_CODE=$(curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/protected/token_test.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+if [ "$HTTP_CODE" -ne 403 ]; then
+  echo "Expected HTTP code 403 without token; actual was $HTTP_CODE"
+  exit 1
+fi
+
+echo "Correctly rejected access without token"
+
+# Test direct origin access with token
+TOKEN=$(cat "$READ_TOKEN")
+echo "Testing direct origin access with token..."
+HTTP_CODE=$(curl --cacert $X509_CA_FILE -H "Authorization: Bearer $TOKEN" --output /dev/null -v --write-out '%{http_code}' "$ORIGIN_URL/protected/token_test.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+if [ "$HTTP_CODE" -ne 200 ]; then
+  echo "Expected HTTP code 200 for direct origin access with token; actual was $HTTP_CODE"
+  echo "Token content:"
+  cat "$READ_TOKEN"
+  exit 1
+fi
+echo "Successfully accessed protected file from origin with token"
+
+# HEAD request with token before prestage - Age header should not be present
+echo "Checking Age header before prestage with token..."
+HTTP_HEADERS=$(curl --cacert $X509_CA_FILE -H "Authorization: Bearer $TOKEN" --head -v "$CACHE_URL/protected/token_test.txt" 2>&1)
+if echo "$HTTP_HEADERS" | grep -qi "^< Age:"; then
+  echo "Age header unexpectedly present before prestaging"
+  exit 1
+fi
+
+# Prestage the token-protected file
+echo "Prestaging token-protected file..."
+HTTP_CODE=$(curl --cacert $X509_CA_FILE -H "Authorization: Bearer $TOKEN" --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/prestage?path=/protected/token_test.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log")
+if [ "$HTTP_CODE" -ne 200 ]; then
+  echo "Expected HTTP code is 200 for token-protected prestage; actual was $HTTP_CODE"
+  exit 1
+fi
+
+# Verify the file was actually prestaged to disk
+if [ ! -f "$XROOTD_CACHEDIR/protected/token_test.txt" ]; then
+  echo "token_test.txt was not prestaged to cache"
+  exit 1
+fi
+
+# Verify file size is correct (256KB)
+FILE_SIZE=$(stat -c%s "$XROOTD_CACHEDIR/protected/token_test.txt" 2>/dev/null || stat -f%z "$XROOTD_CACHEDIR/protected/token_test.txt" 2>/dev/null)
+EXPECTED_SIZE=$((256 * 1024))
+if [ "$FILE_SIZE" -ne "$EXPECTED_SIZE" ]; then
+  echo "Prestaged token-protected file size is incorrect. Expected: $EXPECTED_SIZE, Actual: $FILE_SIZE"
+  exit 1
+fi
+
+# HEAD request with token after prestage - Age header should be present
+echo "Checking Age header after prestage with token..."
+HTTP_HEADERS=$(curl --cacert $X509_CA_FILE -H "Authorization: Bearer $TOKEN" --head -v "$CACHE_URL/protected/token_test.txt" 2>&1)
+if ! echo "$HTTP_HEADERS" | grep -qi "^< Age:"; then
+  echo "Age header not present after prestaging token-protected file"
+  echo "Headers received:"
+  echo "$HTTP_HEADERS" | grep "^<"
+  exit 1
+fi
+
+echo "Successfully verified token-based prestaging with Age header"
+
 ###########################
 # Test parallel prestage  #
 ###########################
@@ -135,7 +264,7 @@ fi
 echo "Running $TEST_NAME - parallel prestage to cache"
 
 for idx in $(seq 1 10); do
-  curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/prestage?path=/random_data_$idx.txt" > "$BINARY_DIR/tests/$TEST_NAME/download_results_${idx}.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log" &
+  curl --cacert $X509_CA_FILE --output /dev/null -v --write-out '%{http_code}' "$CACHE_URL/pelican/api/v1.0/prestage?path=/public/random_data_$idx.txt" > "$BINARY_DIR/tests/$TEST_NAME/download_results_${idx}.txt" 2>> "$BINARY_DIR/tests/$TEST_NAME/client.log" &
 done
 
 wait
@@ -151,7 +280,7 @@ for idx in $(seq 1 10); do
   if [ "$HTTP_CODE" -eq 429 ]; then
     COUNT_429=$((COUNT_429+1))
   fi
-  if [ ! -f "$XROOTD_CACHEDIR/random_data_${idx}.txt" ]; then
+  if [ ! -f "$XROOTD_CACHEDIR/public/random_data_${idx}.txt" ]; then
     NOT_STAGED_COUNT=$((NOT_STAGED_COUNT+1))
   fi
 done
