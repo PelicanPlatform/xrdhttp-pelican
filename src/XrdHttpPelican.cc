@@ -893,8 +893,7 @@ int Handler::EvictReq(const std::string &path, XrdOucEnv *env,
     myArgs[0] = path.c_str();
     myArgs[1] = req.headers.find("xrd-http-query")->second.c_str();
     myData.ArgP = myArgs;
-    int fsctlRes =
-        m_sfs->FSctl(SFS_FSCTL_PLUGXC, myData, einfo, &ent);
+    int fsctlRes = m_sfs->FSctl(SFS_FSCTL_PLUGXC, myData, einfo, &ent);
     bool locked = false;
     if (fsctlRes == SFS_ERROR) {
         auto ec = einfo.getErrInfo();
@@ -948,6 +947,10 @@ int Handler::PrestageReq(const std::string &path, XrdOucEnv *env,
     }
 
     XrdOucEnv prestageEnv(nullptr, 0, &ent);
+    auto authz = env ? env->Get("authz") : nullptr;
+    if (authz) {
+        prestageEnv.Put("authz", authz);
+    }
     PrestageRequestManager::PrestageRequest request(user, path, prestageEnv);
     if (!m_manager.Produce(request)) {
         req.SendSimpleResp(429, "Too Many Requests", nullptr,

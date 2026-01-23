@@ -54,8 +54,19 @@ void PrestageRequestManager::PrestageQueue::PrestageWorker::Prestage(
     PrestageRequestManager::PrestageRequest &request) {
     auto fp = m_oss.newFile("Prestage Worker");
 
-    ssize_t rc =
-        fp->Open(request.GetPath().c_str(), O_RDONLY, 0, request.GetEnv());
+    auto authz = request.GetEnv().Get("authz");
+    std::string path = request.GetPath();
+    if (authz) {
+        // Add authz as a query parameter to path
+        if (path.find('?') != std::string::npos) {
+            path += "&authz=";
+        } else {
+            path += "?authz=";
+        }
+        path += authz;
+    }
+
+    ssize_t rc = fp->Open(path.c_str(), O_RDONLY, 0, request.GetEnv());
     if (rc < 0) {
         if (rc == -ENOENT) {
             request.SetDone(404, "Object does not exist");
