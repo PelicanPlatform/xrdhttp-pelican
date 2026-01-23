@@ -88,7 +88,8 @@ void PrestageRequestManager::PrestageQueue::PrestageWorker::Prestage(
     }
     off_t off{0};
     auto lastUpdate = std::chrono::steady_clock::now();
-    while ((rc = fp->Read(off, 64 * 1024)) > 0) {
+    std::unique_ptr<char[]> buffer(new char[64 * 1024]);
+    while ((rc = fp->Read(buffer.get(), off, 64 * 1024)) > 0) {
         off += rc;
         if (std::chrono::steady_clock::now() - lastUpdate >
             std::chrono::milliseconds(200)) {
