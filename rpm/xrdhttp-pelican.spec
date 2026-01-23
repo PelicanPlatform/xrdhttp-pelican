@@ -1,6 +1,6 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.9
+Version: 0.0.10
 Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
@@ -54,6 +54,12 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Fri Jan 23 2026 Brian Bockelman <bbockelman@morgridge.org> - 0.0.10-1
+- Fix bug preventing prestaging token from being passed to the filesystem
+  layer
+- Workaround fact pre-read isn't implemented in XrdPss
+- Add regression tests corresponding to the above two issues
+
 * Wed Jan 21 2026 Brian Bockelman <bbockelman@morgridge.org> - 0.0.9-1
 - Fix permission issues for prestage when used with token auth
 - Add support for re-exec'ing the xrootd binary, allowing it to reload
