@@ -27,13 +27,14 @@ set_target_properties( XrdOssSlowOpen PROPERTIES OUTPUT_NAME "XrdOssSlowOpen-${X
 
 # SciTokens utilities for testing
 find_package(OpenSSL REQUIRED)
-find_library(SCITOKENS_LIB NAMES SciTokens scitokens REQUIRED)
+find_package(SciTokensCpp REQUIRED)
 
 add_executable(xrdscitokens-create-jwks xrdscitokens-create-jwks.cc)
 target_link_libraries(xrdscitokens-create-jwks OpenSSL::SSL OpenSSL::Crypto)
 
 add_executable(xrdscitokens-create-token xrdscitokens-create-token.cc)
-target_link_libraries(xrdscitokens-create-token ${SCITOKENS_LIB})
+target_include_directories(xrdscitokens-create-token PRIVATE ${SCITOKENS_CPP_INCLUDE_DIR})
+target_link_libraries(xrdscitokens-create-token ${SCITOKENS_CPP_LIBRARIES})
 
 gtest_discover_tests(xrdhttp-pelican-test)
 

@@ -194,7 +194,6 @@ int main(int argc, char *argv[]) {
     }
 
     // Set expiration
-    long now = time(nullptr);
     scitoken_set_lifetime(token.get(), lifetime);
 
     // Serialize token
