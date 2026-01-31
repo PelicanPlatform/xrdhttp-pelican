@@ -22,6 +22,7 @@
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 #include <openssl/evp.h>
+#include <openssl/opensslv.h>
 #include <openssl/pem.h>
 
 #include <fcntl.h>
@@ -37,10 +38,9 @@
 
 // Base64url encode (without padding)
 std::string base64url_encode(const unsigned char *data, size_t len) {
-    static const char base64_chars[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     static const char base64url_chars[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    (void)base64url_chars; // Suppress unused warning
 
     std::string result;
     int i = 0;
@@ -109,7 +109,59 @@ int main(int argc, char *argv[]) {
         return 3;
     }
 
-    // Get EC key
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_EC) {
+        std::cerr << "Key is not an EC key" << std::endl;
+        EVP_PKEY_free(pkey);
+        return 4;
+    }
+
+    // Get EC group name
+    char group_name[80];
+    size_t group_name_len = sizeof(group_name);
+    if (!EVP_PKEY_get_utf8_string_param(pkey, "group", group_name,
+                                        sizeof(group_name), &group_name_len)) {
+        std::cerr << "Failed to get EC group" << std::endl;
+        EVP_PKEY_free(pkey);
+        return 4;
+    }
+
+    // Get curve name from group parameter
+    const char *curve_name = nullptr;
+    if (strcmp(group_name, "prime256v1") == 0 ||
+        strcmp(group_name, "P-256") == 0) {
+        curve_name = "P-256";
+    } else {
+        std::cerr << "Unsupported curve: " << group_name << std::endl;
+        EVP_PKEY_free(pkey);
+        return 5;
+    }
+
+    // Extract X and Y coordinates using OpenSSL 3.0 API
+    unsigned char pub_key_bytes[256];
+    size_t coord_len;
+    if (!EVP_PKEY_get_octet_string_param(pkey, "encoded-pub-key", pub_key_bytes,
+                                         sizeof(pub_key_bytes), &coord_len)) {
+        std::cerr << "Failed to get public key coordinates" << std::endl;
+        EVP_PKEY_free(pkey);
+        return 5;
+    }
+
+    // For uncompressed EC point format: first byte is 0x04, then 32 bytes X,
+    // then 32 bytes Y
+    if (pub_key_bytes[0] != 0x04 || coord_len != 65) {
+        std::cerr << "Unexpected public key format" << std::endl;
+        EVP_PKEY_free(pkey);
+        return 5;
+    }
+
+    // Convert to fixed-length byte arrays (32 bytes for P-256)
+    unsigned char x_bytes[32] = {0};
+    unsigned char y_bytes[32] = {0};
+    memcpy(x_bytes, pub_key_bytes + 1, 32);
+    memcpy(y_bytes, pub_key_bytes + 33, 32);
+#else
+    // OpenSSL 1.1.x code path (for RHEL 8 compatibility)
     EC_KEY *ec_key = EVP_PKEY_get1_EC_KEY(pkey);
     if (!ec_key) {
         std::cerr << "Key is not an EC key" << std::endl;
@@ -141,17 +193,19 @@ int main(int argc, char *argv[]) {
     // Convert to fixed-length byte arrays (32 bytes for P-256)
     unsigned char x_bytes[32] = {0};
     unsigned char y_bytes[32] = {0};
-    int x_len = BN_bn2bin(x_bn, x_bytes + (32 - BN_num_bytes(x_bn)));
-    int y_len = BN_bn2bin(y_bn, y_bytes + (32 - BN_num_bytes(y_bn)));
-
-    // Base64url encode
-    std::string x_b64 = base64url_encode(x_bytes, 32);
-    std::string y_b64 = base64url_encode(y_bytes, 32);
+    BN_bn2bin(x_bn, x_bytes + (32 - BN_num_bytes(x_bn)));
+    BN_bn2bin(y_bn, y_bytes + (32 - BN_num_bytes(y_bn)));
 
     BN_free(x_bn);
     BN_free(y_bn);
     EC_KEY_free(ec_key);
+#endif
+
     EVP_PKEY_free(pkey);
+
+    // Base64url encode
+    std::string x_b64 = base64url_encode(x_bytes, 32);
+    std::string y_b64 = base64url_encode(y_bytes, 32);
 
     // Create JWKS JSON
     std::ofstream ofs(output_file);
