@@ -222,6 +222,9 @@ class Handler : public XrdHttpExtHandler {
     // The executable path for re-exec
     static std::string m_executable_path;
 
+    // The location of the federation token file
+    static std::string m_fedtoken_file;
+
     // Send a SIGTERM to self, followed by a 5 second sleep, followed
     // by a SIGKILL (until the process exits).
     void ShutdownSelf();

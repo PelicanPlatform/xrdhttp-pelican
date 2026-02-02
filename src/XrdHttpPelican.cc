@@ -63,6 +63,7 @@ std::string Handler::m_cache_self_test_file_cinfo;
 std::string Handler::m_authfile_generated;
 std::string Handler::m_scitokens_generated;
 std::string Handler::m_executable_path;
+std::string Handler::m_fedtoken_file;
 std::filesystem::path Handler::m_api_root{"/api/v1.0/pelican"};
 decltype(Handler::m_acc) Handler::m_acc{nullptr};
 decltype(Handler::m_is_cache) Handler::m_is_cache{false};
@@ -349,6 +350,14 @@ Handler::Handler(XrdSysError *log, const char *configfn, XrdOucEnv *xrdEnv)
                        "XRDHTTP_PELICAN_SCITOKENS_GENERATED environment "
                        "variable not set; cannot update the SciTokens");
         }
+        auto fedtoken_file_char = getenv("XRDHTTP_PELICAN_FEDTOKEN");
+        if (fedtoken_file_char) {
+            m_fedtoken_file = fedtoken_file_char;
+        } else {
+            m_log.Emsg("PelicanHandler",
+                       "XRDHTTP_PELICAN_FEDTOKEN environment variable not set; "
+                       "cannot update the federation token");
+        }
 
         if (configfn && strlen(configfn)) {
             XrdOucGatherConf pelicanhandler_conf("pelican.", &m_log);
@@ -565,7 +574,7 @@ void Handler::ProcessMessage() {
         // Command to re-exec the process
         ReExec();
         return;
-    } else if (data <= 0 || data > 8) {
+    } else if (data <= 0 || data > 9) {
         m_log.Emsg("ProcessMessage", "Unknown control message from parent:",
                    std::to_string(data).c_str());
         return;
@@ -599,6 +608,9 @@ void Handler::ProcessMessage() {
     } else if (data == 7) {
         // Pass a scitokens file
         AtomicOverwriteFile(fd, m_scitokens_generated);
+    } else if (data == 9) {
+        // Pass a fed token file
+        AtomicOverwriteFile(fd, m_fedtoken_file);
     } else {
         m_log.Emsg("ProcessMessage", "Unknown message from parent:",
                    std::to_string(data).c_str());
