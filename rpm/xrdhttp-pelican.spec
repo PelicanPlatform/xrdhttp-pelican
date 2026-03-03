@@ -1,6 +1,6 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.10
+Version: 0.0.11
 Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
@@ -54,6 +54,10 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Tue Mar 03 2026 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.11-1
+- Small compatibility fixes
+- Handle federation token file in drop-privileges mode
+
 * Fri Jan 23 2026 Brian Bockelman <bbockelman@morgridge.org> - 0.0.10-1
 - Fix bug preventing prestaging token from being passed to the filesystem
   layer
