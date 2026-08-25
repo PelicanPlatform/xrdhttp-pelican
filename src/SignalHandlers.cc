@@ -90,10 +90,10 @@ bool ParseHexChar(char c, int *value) {
 
 namespace {
 
-// Absolute path to the addr2line/atos symbolizer, resolved during signal
-// handler installation.  Empty string means no symbolizer is available.
-// Resolved up front so the post-fork child can execv() it without a PATH
-// search, which is not async-signal-safe.
+// Absolute path to the addr2line symbolizer (Linux only), resolved during
+// signal handler installation.  Empty string means no symbolizer is
+// available.  Resolved up front so the post-fork child can execv() it
+// without a PATH search, which is not async-signal-safe.
 static char g_symbolizer_path[512] = {0};
 
 // Set once the first crashing thread enters the handler; later threads park
@@ -101,7 +101,7 @@ static char g_symbolizer_path[512] = {0};
 // deadlock can form.
 static std::atomic_flag g_crash_in_progress = ATOMIC_FLAG_INIT;
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__)
 // Fork without running the registered atfork handlers.
 //
 // The handlers are the deadlock: glibc's fork() acquires the atfork lock,
@@ -112,7 +112,6 @@ static std::atomic_flag g_crash_in_progress = ATOMIC_FLAG_INIT;
 // async-signal-safe variant that skips all of that; the child only ever
 // calls close/dup2/open/execv/_exit, so it has no need for the handlers.
 pid_t AsyncSignalSafeFork() {
-#if defined(__linux__)
 #if defined(__GLIBC__) &&                                                      \
     (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
     return _Fork();
@@ -127,13 +126,8 @@ pid_t AsyncSignalSafeFork() {
     return syscall(SYS_clone, (long)SIGCHLD, 0L, 0L, 0L, 0L);
 #endif
 #endif
-#else
-    // macOS has no _Fork() equivalent; fork() there still runs the atfork
-    // handlers and retains the (much less commonly hit) deadlock hazard.
-    return fork();
-#endif
 }
-#endif // defined(__linux__) || defined(__APPLE__)
+#endif // defined(__linux__)
 
 // Helper to write a number in hex format to file descriptor (async-signal-safe)
 void WriteHex(int fd, uintptr_t value) {
@@ -171,6 +165,7 @@ void WriteDecimal(int fd, int value) {
     _ = write(fd, buf, pos);
 }
 
+#if defined(__linux__)
 // Resolve an executable to an absolute path, checking common locations and
 // then $PATH.  Called during initialization, not in signal handler context,
 // so ordinary libc use is fine here.  Returns true and fills `out` on
@@ -208,6 +203,7 @@ bool ResolveExecutable(const char *exe_name, char *out, size_t out_size) {
     out[0] = '\0';
     return false;
 }
+#endif // defined(__linux__)
 
 } // anonymous namespace
 
@@ -427,159 +423,53 @@ void PrintDetailedStackTrace(void **trace, int size) {
 
 #elif defined(__APPLE__)
 
-// Helper to write decimal to buffer (for child process args)
-void WriteDecimalToBuffer(char *buf, int *pos, int value) {
-    if (value < 0) {
-        buf[(*pos)++] = '-';
-        value = -value;
-    }
-
-    if (value == 0) {
-        buf[(*pos)++] = '0';
-    } else {
-        char digits[16];
-        int digit_count = 0;
-        while (value > 0) {
-            digits[digit_count++] = '0' + (value % 10);
-            value /= 10;
-        }
-        for (int i = digit_count - 1; i >= 0; i--) {
-            buf[(*pos)++] = digits[i];
-        }
-    }
-    buf[*pos] = '\0';
-}
-
 void PrintDetailedStackTrace(void **trace, int size) {
-    // Note: backtrace_symbols() uses malloc internally, so it's NOT
-    // async-signal-safe. We'll invoke atos for each address without
-    // pre-fetching symbols.
-
+    // No external symbolizer on macOS: fork() here runs the atfork prepare
+    // handlers (libmalloc takes every zone lock), so it deadlocks in exactly
+    // the scenario this handler exists for, and there is no _Fork()
+    // equivalent.  Worse, libmalloc's fatal corruption paths mark the
+    // process for termination before raising the catchable SIGABRT, so a
+    // slow per-frame atos would be cut short anyway.  Print module+offset
+    // and the nearest exported symbol via dladdr instead; full
+    // symbolization can be done offline with atos.  (dladdr takes the dyld
+    // lock and is not strictly async-signal-safe; the alarm() watchdog in
+    // the handler bounds that hazard.)
     for (int i = 0; i < size; i++) {
-        // If atos is not available, use dladdr for basic info.  (dladdr
-        // takes the dyld lock and is not strictly async-signal-safe; it is
-        // tolerated here as a macOS-only fallback path.)
-        if (g_symbolizer_path[0] == '\0') {
-            write(STDERR_FILENO, "#", 1);
-            WriteDecimal(STDERR_FILENO, i);
-            write(STDERR_FILENO, " ", 1);
-
-            Dl_info info;
-            if (dladdr(trace[i], &info) && info.dli_fname) {
-                // Write library name
-                const char *fname = info.dli_fname;
-                int fname_len = 0;
-                while (fname[fname_len] != '\0')
-                    fname_len++;
-                write(STDERR_FILENO, fname, fname_len);
-                write(STDERR_FILENO, " ", 1);
-
-                // Write offset from library base
-                uintptr_t offset =
-                    (uintptr_t)trace[i] - (uintptr_t)info.dli_fbase;
-                WriteHex(STDERR_FILENO, offset);
-            } else {
-                WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-            }
-            write(STDERR_FILENO, "\n", 1);
-            continue;
-        }
-
-        int pipe_fds[2];
-        if (pipe(pipe_fds) < 0) {
-            // Fallback to raw address
-            write(STDERR_FILENO, "#", 1);
-            WriteDecimal(STDERR_FILENO, i);
-            write(STDERR_FILENO, " ", 1);
-            WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-            write(STDERR_FILENO, "\n", 1);
-            continue;
-        }
-
-        pid_t pid = AsyncSignalSafeFork();
-        if (pid < 0) {
-            // Fork failed, fallback to raw address
-            close(pipe_fds[0]);
-            close(pipe_fds[1]);
-            write(STDERR_FILENO, "#", 1);
-            WriteDecimal(STDERR_FILENO, i);
-            write(STDERR_FILENO, " ", 1);
-            WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-            write(STDERR_FILENO, "\n", 1);
-            continue;
-        }
-
-        if (pid == 0) {
-            // Child process - run atos for this single address
-            close(pipe_fds[0]); // Close read end
-            dup2(pipe_fds[1], STDOUT_FILENO);
-            close(pipe_fds[1]);
-
-            // Redirect stderr to /dev/null
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) {
-                dup2(devnull, STDERR_FILENO);
-                close(devnull);
-            }
-
-            // Build address string using async-signal-safe operations
-            char addr_str[32];
-            uintptr_t addr = reinterpret_cast<uintptr_t>(trace[i]);
-            int addr_len =
-                XrdHttpPelican::detail::WriteHexToBuffer(addr_str, addr);
-            addr_str[addr_len] = '\0';
-
-            // Build pid string
-            char pid_str[32];
-            int pid_pos = 0;
-            WriteDecimalToBuffer(pid_str, &pid_pos, getppid());
-
-            char *const argv[] = {const_cast<char *>("atos"),
-                                  const_cast<char *>("-p"),
-                                  pid_str,
-                                  const_cast<char *>("-fullPath"),
-                                  addr_str,
-                                  nullptr};
-            execv(g_symbolizer_path, argv);
-            _exit(1);
-        }
-
-        // Parent process
-        close(pipe_fds[1]); // Close write end
-
-        // Write frame header
         write(STDERR_FILENO, "#", 1);
         WriteDecimal(STDERR_FILENO, i);
         write(STDERR_FILENO, " ", 1);
         WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
         write(STDERR_FILENO, " ", 1);
 
-        // Read atos output
-        char buffer[1024];
-        int bytes_read;
-        bool got_output = false;
+        Dl_info info;
+        if (dladdr(trace[i], &info) && info.dli_fname) {
+            // Write library name
+            const char *fname = info.dli_fname;
+            int fname_len = 0;
+            while (fname[fname_len] != '\0')
+                fname_len++;
+            write(STDERR_FILENO, fname, fname_len);
+            write(STDERR_FILENO, " ", 1);
 
-        while ((bytes_read = read(pipe_fds[0], buffer, sizeof(buffer))) > 0) {
-            got_output = true;
-            // Remove trailing newline from atos output if present
-            if (bytes_read > 0 && buffer[bytes_read - 1] == '\n') {
-                bytes_read--;
+            // Write offset from library base
+            uintptr_t offset = (uintptr_t)trace[i] - (uintptr_t)info.dli_fbase;
+            WriteHex(STDERR_FILENO, offset);
+
+            // Write nearest exported symbol, if any
+            if (info.dli_sname && info.dli_saddr) {
+                write(STDERR_FILENO, " (", 2);
+                const char *sname = info.dli_sname;
+                int sname_len = 0;
+                while (sname[sname_len] != '\0')
+                    sname_len++;
+                write(STDERR_FILENO, sname, sname_len);
+                write(STDERR_FILENO, " + ", 3);
+                WriteHex(STDERR_FILENO,
+                         (uintptr_t)trace[i] - (uintptr_t)info.dli_saddr);
+                write(STDERR_FILENO, ")", 1);
             }
-            write(STDERR_FILENO, buffer, bytes_read);
         }
-
-        close(pipe_fds[0]);
-
-        // If atos didn't produce output, show raw address
-        if (!got_output) {
-            WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-        }
-
         write(STDERR_FILENO, "\n", 1);
-
-        // Wait for atos to finish
-        int status;
-        waitpid(pid, &status, 0);
     }
 }
 
@@ -679,11 +569,11 @@ namespace XrdHttpPelican {
 void InstallSignalHandlers() {
     // Resolve the symbolizer to an absolute path now, in normal (non-signal)
     // context, so the handler's post-fork child can execv() it directly.
+    // Only Linux runs an external symbolizer from the handler: macOS has no
+    // async-signal-safe fork, so its handler symbolizes via dladdr instead.
 #ifdef __linux__
     ResolveExecutable("addr2line", g_symbolizer_path,
                       sizeof(g_symbolizer_path));
-#elif defined(__APPLE__)
-    ResolveExecutable("atos", g_symbolizer_path, sizeof(g_symbolizer_path));
 #else
     g_symbolizer_path[0] = '\0';
 #endif
