@@ -1,7 +1,7 @@
 
 Name: xrdhttp-pelican
 Version: 0.0.12
-Release: 1%{?dist}
+Release: 2%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
 Group: System Environment/Daemons
@@ -11,11 +11,20 @@ URL: https://github.com/pelicanplatform/xrdhttp-pelican
 # git archive --format tar.gz v%{version} --prefix=xrdhttp-pelican-%{version}/ > ~/rpmbuild/SOURCES/xrdhttp-pelican-%{version}.tar.gz
 Source0: %{name}-%{version}.tar.gz
 
+# Build against XRootD 6 by passing `--with xrootd6` to rpmbuild.  Without it
+# we build against XRootD 5 (the original default).
+%bcond_with xrootd6
+
+%if %{with xrootd6}
+%define xrootd_current_major 6
+%define xrootd_current_minor 1
+%else
 %define xrootd_current_major 5
 %define xrootd_current_minor 9
-%define xrootd_next_minor 10
+%endif
+# We have to shell out for EL8 (rpm 4.14) compatibility. rpm 4.16+ (EL9+) accepts %%{expr:...}
+%global xrootd_next_minor %(echo $(( %{xrootd_current_minor} + 1)) )
 
-BuildRoot: %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 # Since we rely on the private headers, we don't want the plugin to cross
 # unknown feature release versions.
 BuildRequires: xrootd-devel >= 1:%{xrootd_current_major}.%{xrootd_current_minor}.0
@@ -54,6 +63,9 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Tue Aug 25 2026 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.12-2
+- Add "--with xrootd6" build conditional
+
 * Tue Aug 25 2026 Brian Bockelman <bbockelman@morgridge.org> - 0.0.12-1
 - Rewrite signal handler to use fewer signal unsafe functions.
   On Linux, the remaining unsafe function should only deadlock if it runs
