@@ -187,7 +187,8 @@ class Handler : public XrdHttpExtHandler {
     void ReExec();
 
     // Process a prestage request from the remote client
-    int PrestageReq(const std::string &path, XrdOucEnv *env, XrdHttpExtReq &req);
+    int PrestageReq(const std::string &path, XrdOucEnv *env,
+                    XrdHttpExtReq &req);
 
     // Process a cache eviction request
     int EvictReq(const std::string &path, XrdOucEnv *env, XrdHttpExtReq &req);
