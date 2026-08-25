@@ -18,6 +18,8 @@
 
 #include "SignalHandlers.hh"
 
+#include <atomic>
+
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <fcntl.h>
@@ -29,8 +31,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
+#ifdef __linux__
+#include <sys/syscall.h>
 #endif
 
 #ifdef __APPLE__
@@ -88,9 +90,44 @@ bool ParseHexChar(char c, int *value) {
 
 namespace {
 
-// Global flag indicating whether addr2line/atos is available
-// Set during signal handler installation
-static bool g_symbolizer_available = false;
+// Absolute path to the addr2line symbolizer (Linux only), resolved during
+// signal handler installation.  Empty string means no symbolizer is
+// available.  Resolved up front so the post-fork child can execv() it
+// without a PATH search, which is not async-signal-safe.
+static char g_symbolizer_path[512] = {0};
+
+// Set once the first crashing thread enters the handler; later threads park
+// in pause() so only one trace is produced and no handler-vs-handler
+// deadlock can form.
+static std::atomic_flag g_crash_in_progress = ATOMIC_FLAG_INIT;
+
+#if defined(__linux__)
+// Fork without running the registered atfork handlers.
+//
+// The handlers are the deadlock: glibc's fork() acquires the atfork lock,
+// the stdio list locks, and every malloc arena mutex.  A synchronous fault
+// signal (SIGSEGV/SIGABRT from heap corruption) is delivered on the thread
+// that already holds an arena mutex, so calling fork() from the handler
+// self-deadlocks and wedges the whole process (issue #25).  _Fork() is the
+// async-signal-safe variant that skips all of that; the child only ever
+// calls close/dup2/open/execv/_exit, so it has no need for the handlers.
+pid_t AsyncSignalSafeFork() {
+#if defined(__GLIBC__) &&                                                      \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+    return _Fork();
+#else
+    // Pre-2.34 glibc has no _Fork(); clone with just SIGCHLD is the direct
+    // syscall equivalent.  All arguments past the flags are zero, so the
+    // arch-specific clone argument orders agree except on s390, where the
+    // flags come second.
+#if defined(__s390__) || defined(__s390x__)
+    return syscall(SYS_clone, 0L, (long)SIGCHLD, 0L, 0L, 0L);
+#else
+    return syscall(SYS_clone, (long)SIGCHLD, 0L, 0L, 0L, 0L);
+#endif
+#endif
+}
+#endif // defined(__linux__)
 
 // Helper to write a number in hex format to file descriptor (async-signal-safe)
 void WriteHex(int fd, uintptr_t value) {
@@ -128,44 +165,45 @@ void WriteDecimal(int fd, int value) {
     _ = write(fd, buf, pos);
 }
 
-// Check if an executable exists in PATH (called during initialization, not in
-// signal handler)
-bool IsExecutableAvailable(const char *exe_name) {
-    // Try to execute with --version or similar to test availability
-    // We use access() with X_OK to check if executable exists
-    // First check common locations
-    const char *paths[] = {"/usr/bin/", "/bin/", "/usr/local/bin/", nullptr};
-
-    char full_path[256];
-    for (int i = 0; paths[i] != nullptr; i++) {
-        snprintf(full_path, sizeof(full_path), "%s%s", paths[i], exe_name);
-        if (access(full_path, X_OK) == 0) {
+#if defined(__linux__)
+// Resolve an executable to an absolute path, checking common locations and
+// then $PATH.  Called during initialization, not in signal handler context,
+// so ordinary libc use is fine here.  Returns true and fills `out` on
+// success.
+bool ResolveExecutable(const char *exe_name, char *out, size_t out_size) {
+    const char *dirs[] = {"/usr/bin", "/bin", "/usr/local/bin", nullptr};
+    for (int i = 0; dirs[i] != nullptr; i++) {
+        int len = snprintf(out, out_size, "%s/%s", dirs[i], exe_name);
+        if (len > 0 && (size_t)len < out_size && access(out, X_OK) == 0) {
             return true;
         }
     }
 
-    // Also try direct access (might be in PATH but not in standard locations)
-    // We do this by forking and trying to exec
-    pid_t pid = fork();
-    if (pid == 0) {
-        // Child process
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
-        }
-        execlp(exe_name, exe_name, "--version", (char *)nullptr);
-        _exit(1);
-    } else if (pid > 0) {
-        int status;
-        waitpid(pid, &status, 0);
-        // If exec succeeded, the command exists
-        return WIFEXITED(status);
+    const char *path = getenv("PATH");
+    if (path == nullptr) {
+        out[0] = '\0';
+        return false;
     }
-
+    const char *start = path;
+    while (true) {
+        const char *end = strchr(start, ':');
+        size_t dir_len = end ? (size_t)(end - start) : strlen(start);
+        if (dir_len > 0) {
+            int len = snprintf(out, out_size, "%.*s/%s", (int)dir_len, start,
+                               exe_name);
+            if (len > 0 && (size_t)len < out_size && access(out, X_OK) == 0) {
+                return true;
+            }
+        }
+        if (end == nullptr) {
+            break;
+        }
+        start = end + 1;
+    }
+    out[0] = '\0';
     return false;
 }
+#endif // defined(__linux__)
 
 } // anonymous namespace
 
@@ -297,7 +335,7 @@ void PrintDetailedStackTrace(void **trace, int size) {
         uintptr_t offset = addr - base_addr;
 
         // If addr2line is not available, just print module path and offset
-        if (!g_symbolizer_available) {
+        if (g_symbolizer_path[0] == '\0') {
             // Write module path
             int path_len = 0;
             while (module_path[path_len] != '\0' && path_len < 256) {
@@ -317,9 +355,13 @@ void PrintDetailedStackTrace(void **trace, int size) {
             continue;
         }
 
-        pid_t pid = fork();
+        pid_t pid = AsyncSignalSafeFork();
         if (pid == 0) {
-            // Child process - run addr2line
+            // Child process - run addr2line.  Because AsyncSignalSafeFork()
+            // skips the atfork handlers, the child inherits whatever lock
+            // state the crashing process had (e.g. a held malloc arena
+            // mutex), so only async-signal-safe calls are permitted here:
+            // close/dup2/open/execv on a pre-resolved absolute path.
             close(pipe_in[1]); // Close write end of input pipe
 
             dup2(pipe_in[0], STDIN_FILENO);
@@ -341,8 +383,14 @@ void PrintDetailedStackTrace(void **trace, int size) {
                 close(saved_stderr);
             }
 
-            execlp("addr2line", "addr2line", "-e", module_path, "-f", "-C",
-                   "-p", (char *)nullptr);
+            char *const argv[] = {const_cast<char *>("addr2line"),
+                                  const_cast<char *>("-e"),
+                                  module_path,
+                                  const_cast<char *>("-f"),
+                                  const_cast<char *>("-C"),
+                                  const_cast<char *>("-p"),
+                                  nullptr};
+            execv(g_symbolizer_path, argv);
             _exit(1);
         } else if (pid > 0) {
             // Parent process
@@ -356,8 +404,14 @@ void PrintDetailedStackTrace(void **trace, int size) {
             _ = write(pipe_in[1], hex_buf, hex_len);
             close(pipe_in[1]);
 
-            // Wait for addr2line to finish (it writes directly to stderr)
-            waitpid(pid, nullptr, 0);
+            // Wait for addr2line to finish (it writes directly to stderr).
+            // If it failed (e.g. the "module" is [vdso] or the exec failed),
+            // it produced no output, so terminate the frame's line ourselves.
+            int status = 0;
+            waitpid(pid, &status, 0);
+            if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                _ = write(STDERR_FILENO, "(no symbol info)\n", 17);
+            }
         } else {
             // Fork failed
             close(pipe_in[0]);
@@ -369,152 +423,53 @@ void PrintDetailedStackTrace(void **trace, int size) {
 
 #elif defined(__APPLE__)
 
-// Helper to write decimal to buffer (for child process args)
-void WriteDecimalToBuffer(char *buf, int *pos, int value) {
-    if (value < 0) {
-        buf[(*pos)++] = '-';
-        value = -value;
-    }
-
-    if (value == 0) {
-        buf[(*pos)++] = '0';
-    } else {
-        char digits[16];
-        int digit_count = 0;
-        while (value > 0) {
-            digits[digit_count++] = '0' + (value % 10);
-            value /= 10;
-        }
-        for (int i = digit_count - 1; i >= 0; i--) {
-            buf[(*pos)++] = digits[i];
-        }
-    }
-    buf[*pos] = '\0';
-}
-
 void PrintDetailedStackTrace(void **trace, int size) {
-    // Note: backtrace_symbols() uses malloc internally, so it's NOT
-    // async-signal-safe. We'll invoke atos for each address without
-    // pre-fetching symbols.
-
+    // No external symbolizer on macOS: fork() here runs the atfork prepare
+    // handlers (libmalloc takes every zone lock), so it deadlocks in exactly
+    // the scenario this handler exists for, and there is no _Fork()
+    // equivalent.  Worse, libmalloc's fatal corruption paths mark the
+    // process for termination before raising the catchable SIGABRT, so a
+    // slow per-frame atos would be cut short anyway.  Print module+offset
+    // and the nearest exported symbol via dladdr instead; full
+    // symbolization can be done offline with atos.  (dladdr takes the dyld
+    // lock and is not strictly async-signal-safe; the alarm() watchdog in
+    // the handler bounds that hazard.)
     for (int i = 0; i < size; i++) {
-        // If atos is not available, use dladdr for basic info
-        if (!g_symbolizer_available) {
-            write(STDERR_FILENO, "#", 1);
-            WriteDecimal(STDERR_FILENO, i);
-            write(STDERR_FILENO, " ", 1);
-
-            Dl_info info;
-            if (dladdr(trace[i], &info) && info.dli_fname) {
-                // Write library name
-                const char *fname = info.dli_fname;
-                int fname_len = 0;
-                while (fname[fname_len] != '\0')
-                    fname_len++;
-                write(STDERR_FILENO, fname, fname_len);
-                write(STDERR_FILENO, " ", 1);
-
-                // Write offset from library base
-                uintptr_t offset =
-                    (uintptr_t)trace[i] - (uintptr_t)info.dli_fbase;
-                WriteHex(STDERR_FILENO, offset);
-            } else {
-                WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-            }
-            write(STDERR_FILENO, "\n", 1);
-            continue;
-        }
-
-        int pipe_fds[2];
-        if (pipe(pipe_fds) < 0) {
-            // Fallback to raw address
-            write(STDERR_FILENO, "#", 1);
-            WriteDecimal(STDERR_FILENO, i);
-            write(STDERR_FILENO, " ", 1);
-            WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-            write(STDERR_FILENO, "\n", 1);
-            continue;
-        }
-
-        pid_t pid = fork();
-        if (pid < 0) {
-            // Fork failed, fallback to raw address
-            close(pipe_fds[0]);
-            close(pipe_fds[1]);
-            write(STDERR_FILENO, "#", 1);
-            WriteDecimal(STDERR_FILENO, i);
-            write(STDERR_FILENO, " ", 1);
-            WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-            write(STDERR_FILENO, "\n", 1);
-            continue;
-        }
-
-        if (pid == 0) {
-            // Child process - run atos for this single address
-            close(pipe_fds[0]); // Close read end
-            dup2(pipe_fds[1], STDOUT_FILENO);
-            close(pipe_fds[1]);
-
-            // Redirect stderr to /dev/null
-            int devnull = open("/dev/null", O_WRONLY);
-            if (devnull >= 0) {
-                dup2(devnull, STDERR_FILENO);
-                close(devnull);
-            }
-
-            // Build address string using async-signal-safe operations
-            char addr_str[32];
-            uintptr_t addr = reinterpret_cast<uintptr_t>(trace[i]);
-            int addr_len =
-                XrdHttpPelican::detail::WriteHexToBuffer(addr_str, addr);
-            addr_str[addr_len] = '\0';
-
-            // Build pid string
-            char pid_str[32];
-            int pid_pos = 0;
-            WriteDecimalToBuffer(pid_str, &pid_pos, getppid());
-
-            execlp("atos", "atos", "-p", pid_str, "-fullPath", addr_str,
-                   (char *)nullptr);
-            _exit(1);
-        }
-
-        // Parent process
-        close(pipe_fds[1]); // Close write end
-
-        // Write frame header
         write(STDERR_FILENO, "#", 1);
         WriteDecimal(STDERR_FILENO, i);
         write(STDERR_FILENO, " ", 1);
         WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
         write(STDERR_FILENO, " ", 1);
 
-        // Read atos output
-        char buffer[1024];
-        int bytes_read;
-        bool got_output = false;
+        Dl_info info;
+        if (dladdr(trace[i], &info) && info.dli_fname) {
+            // Write library name
+            const char *fname = info.dli_fname;
+            int fname_len = 0;
+            while (fname[fname_len] != '\0')
+                fname_len++;
+            write(STDERR_FILENO, fname, fname_len);
+            write(STDERR_FILENO, " ", 1);
 
-        while ((bytes_read = read(pipe_fds[0], buffer, sizeof(buffer))) > 0) {
-            got_output = true;
-            // Remove trailing newline from atos output if present
-            if (bytes_read > 0 && buffer[bytes_read - 1] == '\n') {
-                bytes_read--;
+            // Write offset from library base
+            uintptr_t offset = (uintptr_t)trace[i] - (uintptr_t)info.dli_fbase;
+            WriteHex(STDERR_FILENO, offset);
+
+            // Write nearest exported symbol, if any
+            if (info.dli_sname && info.dli_saddr) {
+                write(STDERR_FILENO, " (", 2);
+                const char *sname = info.dli_sname;
+                int sname_len = 0;
+                while (sname[sname_len] != '\0')
+                    sname_len++;
+                write(STDERR_FILENO, sname, sname_len);
+                write(STDERR_FILENO, " + ", 3);
+                WriteHex(STDERR_FILENO,
+                         (uintptr_t)trace[i] - (uintptr_t)info.dli_saddr);
+                write(STDERR_FILENO, ")", 1);
             }
-            write(STDERR_FILENO, buffer, bytes_read);
         }
-
-        close(pipe_fds[0]);
-
-        // If atos didn't produce output, show raw address
-        if (!got_output) {
-            WriteHex(STDERR_FILENO, reinterpret_cast<uintptr_t>(trace[i]));
-        }
-
         write(STDERR_FILENO, "\n", 1);
-
-        // Wait for atos to finish
-        int status;
-        waitpid(pid, &status, 0);
     }
 }
 
@@ -528,6 +483,31 @@ void PrintDetailedStackTrace(void **trace, int size) {
 #endif
 
 void SignalHandler(int sig) {
+    // First crashing thread wins; any other thread that faults concurrently
+    // parks here until the winner's re-raise terminates the process.
+    // (std::atomic_flag is guaranteed lock-free and async-signal-safe.)
+    if (g_crash_in_progress.test_and_set()) {
+        while (true) {
+            pause();
+        }
+    }
+
+    // Watchdog: the trace below is best-effort.  backtrace() retains a
+    // residual AS-Unsafe heap/lock hazard even after the warm-up call at
+    // install time, and the symbolizer child could in principle hang.  If
+    // anything wedges, let SIGALRM's default action terminate the process
+    // rather than hanging it forever.
+    struct sigaction alarm_sa;
+    alarm_sa.sa_handler = SIG_DFL;
+    sigemptyset(&alarm_sa.sa_mask);
+    alarm_sa.sa_flags = 0;
+    sigaction(SIGALRM, &alarm_sa, nullptr);
+    sigset_t alarm_set;
+    sigemptyset(&alarm_set);
+    sigaddset(&alarm_set, SIGALRM);
+    sigprocmask(SIG_UNBLOCK, &alarm_set, nullptr);
+    alarm(60);
+
     ssize_t __attribute__((unused)) _;
     const char *sig_name = "UNKNOWN";
     int sig_name_len = 7; // strlen("UNKNOWN")
@@ -587,18 +567,34 @@ void SignalHandler(int sig) {
 namespace XrdHttpPelican {
 
 void InstallSignalHandlers() {
-    // Check if symbolizer tools are available
+    // Resolve the symbolizer to an absolute path now, in normal (non-signal)
+    // context, so the handler's post-fork child can execv() it directly.
+    // Only Linux runs an external symbolizer from the handler: macOS has no
+    // async-signal-safe fork, so its handler symbolizes via dladdr instead.
 #ifdef __linux__
-    g_symbolizer_available = IsExecutableAvailable("addr2line");
-#elif defined(__APPLE__)
-    g_symbolizer_available = IsExecutableAvailable("atos");
+    ResolveExecutable("addr2line", g_symbolizer_path,
+                      sizeof(g_symbolizer_path));
 #else
-    g_symbolizer_available = false;
+    g_symbolizer_path[0] = '\0';
 #endif
+
+    // Warm up backtrace(): its first call may dlopen/initialize the unwinder
+    // (glibc annotates it AS-Unsafe init/dlopen/plugin), which must not
+    // happen for the first time in signal context.  This does not clear the
+    // residual heap/lock hazard; the alarm() watchdog in the handler covers
+    // that.
+    void *warmup[4];
+    backtrace(warmup, 4);
 
     struct sigaction sa;
     sa.sa_handler = SignalHandler;
+    // Block the other handled fault signals while the handler runs so a
+    // second fault class (e.g. SIGABRT during the SIGSEGV handler) cannot
+    // interleave on the same thread.
     sigemptyset(&sa.sa_mask);
+    sigaddset(&sa.sa_mask, SIGSEGV);
+    sigaddset(&sa.sa_mask, SIGILL);
+    sigaddset(&sa.sa_mask, SIGABRT);
     sa.sa_flags = SA_RESTART;
 
     sigaction(SIGSEGV, &sa, nullptr);
