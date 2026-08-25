@@ -254,7 +254,11 @@ bool GetModuleForAddress(int maps_fd, uintptr_t addr, char *module_path,
                     // Skip to pathname: we need to skip perms, offset, dev,
                     // inode (5 fields total after address range)
                     // Format: start-end perms offset dev inode pathname
-                    // After parsing 'end', we're at the space before perms
+                    // After parsing 'end', we're at the space before perms.
+                    // The file offset (field 2) is extracted along the way:
+                    // subtracting it from the segment start yields the
+                    // module's load base, which is what symbolizers need.
+                    uintptr_t file_offset = 0;
                     int space_count = 0;
                     while (pos < line_pos) {
                         if (line_buffer[pos] == ' ') {
@@ -268,6 +272,11 @@ bool GetModuleForAddress(int maps_fd, uintptr_t addr, char *module_path,
                                 }
                                 break;
                             }
+                        } else if (space_count == 2) {
+                            int digit;
+                            if (ParseHexChar(line_buffer[pos], &digit)) {
+                                file_offset = (file_offset << 4) | digit;
+                            }
                         }
                         pos++;
                     }
@@ -280,8 +289,13 @@ bool GetModuleForAddress(int maps_fd, uintptr_t addr, char *module_path,
                         }
                         module_path[path_idx] = '\0';
 
-                        // Return the base address of THIS segment
-                        *base_addr = start;
+                        // Return the module's load base: the segment start
+                        // minus the offset at which the file is mapped
+                        // there.  (The containing segment's start is NOT
+                        // the load base when the linker places text after a
+                        // leading read-only segment, e.g. x86_64's default
+                        // -z separate-code layout.)
+                        *base_addr = start - file_offset;
                         return true;
                     }
                 }
@@ -331,8 +345,30 @@ void PrintDetailedStackTrace(void **trace, int size) {
         }
         close(maps_fd);
 
-        // Calculate offset from base address (handle ASLR)
-        uintptr_t offset = addr - base_addr;
+        // Compute the address to hand the symbolizer.  base_addr is the
+        // module's load base, so the difference is the module-relative
+        // virtual address -- correct for ET_DYN objects (shared libraries
+        // and PIE executables, which link at vaddr 0).  A fixed-position
+        // ET_EXEC executable links at an absolute address, so there the
+        // runtime address already is the virtual address; sniff e_type from
+        // the ELF header (plain open/read, async-signal-safe) to tell the
+        // two apart.
+        uintptr_t sym_addr = addr - base_addr;
+        int elf_fd = open(module_path, O_RDONLY);
+        if (elf_fd >= 0) {
+            unsigned char ehdr[18];
+            if (read(elf_fd, ehdr, sizeof(ehdr)) == (ssize_t)sizeof(ehdr) &&
+                ehdr[0] == 0x7f && ehdr[1] == 'E' && ehdr[2] == 'L' &&
+                ehdr[3] == 'F') {
+                bool big_endian = ehdr[5] == 2; // EI_DATA == ELFDATA2MSB
+                uint16_t e_type = big_endian ? ((ehdr[16] << 8) | ehdr[17])
+                                             : (ehdr[16] | (ehdr[17] << 8));
+                if (e_type == 2) { // ET_EXEC
+                    sym_addr = addr;
+                }
+            }
+            close(elf_fd);
+        }
 
         // If addr2line is not available, just print module path and offset
         if (g_symbolizer_path[0] == '\0') {
@@ -343,7 +379,7 @@ void PrintDetailedStackTrace(void **trace, int size) {
             }
             _ = write(STDERR_FILENO, module_path, path_len);
             _ = write(STDERR_FILENO, " ", 1);
-            WriteHex(STDERR_FILENO, offset);
+            WriteHex(STDERR_FILENO, sym_addr);
             _ = write(STDERR_FILENO, "\n", 1);
             continue;
         }
@@ -396,10 +432,10 @@ void PrintDetailedStackTrace(void **trace, int size) {
             // Parent process
             close(pipe_in[0]); // Close read end of input pipe
 
-            // Write the offset to addr2line
+            // Write the symbolization address to addr2line
             char hex_buf[32];
             int hex_len =
-                XrdHttpPelican::detail::WriteHexToBuffer(hex_buf, offset);
+                XrdHttpPelican::detail::WriteHexToBuffer(hex_buf, sym_addr);
             hex_buf[hex_len++] = '\n';
             _ = write(pipe_in[1], hex_buf, hex_len);
             close(pipe_in[1]);

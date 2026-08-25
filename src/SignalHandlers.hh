@@ -46,8 +46,12 @@ int WriteHexToBuffer(char *buf, uintptr_t value);
 bool ParseHexChar(char c, int *value);
 
 /**
- * Find the module path and base address for a given address by reading from
+ * Find the module path and load base for a given address by reading from
  * a file descriptor containing /proc/self/maps format data (async-signal-safe).
+ * base_addr is set to the module's load base -- the containing segment's
+ * start address minus the file offset at which it is mapped -- so that
+ * (addr - base_addr) is the module-relative virtual address for ET_DYN
+ * objects regardless of segment layout (e.g. x86_64 -z separate-code).
  * Returns true on success with module_path and base_addr filled in.
  * Returns false if address not found or error occurs.
  */

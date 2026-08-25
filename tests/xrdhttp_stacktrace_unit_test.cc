@@ -328,7 +328,9 @@ TEST_F(GetModuleForAddressTest, MultipleSegmentsSameLibrary) {
     EXPECT_TRUE(result);
     EXPECT_EQ(base_addr, 0x7f1234000000UL);
 
-    // Address in third segment - should return that segment's base
+    // Address in third segment - the returned base must still be the
+    // module's load base (segment start minus its file offset), not the
+    // containing segment's start.
     fd = CreateMockMapsFile(mock_maps);
     ASSERT_GE(fd, 0);
     result = XrdHttpPelican::detail::GetModuleForAddress(
@@ -336,8 +338,30 @@ TEST_F(GetModuleForAddressTest, MultipleSegmentsSameLibrary) {
     close(fd);
     EXPECT_TRUE(result);
     EXPECT_STREQ(module_path, "/lib/libtest.so");
-    EXPECT_EQ(base_addr,
-              0x7f1234200000UL); // Base of the segment containing the address
+    EXPECT_EQ(base_addr, 0x7f1234000000UL);
+}
+
+TEST_F(GetModuleForAddressTest, SeparateCodeLayout) {
+    // x86_64 default (-z separate-code) layout: a read-only segment precedes
+    // the executable segment, so the text segment's start is load base plus
+    // its file offset.  Symbolization must use the load base, not the text
+    // segment's start (this was mis-symbolizing every frame on x86_64).
+    std::string mock_maps =
+        "7f1234000000-7f1234001000 r--p 00000000 08:02 67890 /lib/libtest.so\n"
+        "7f1234001000-7f1234100000 r-xp 00001000 08:02 67890 "
+        "/lib/libtest.so\n";
+
+    char module_path[256];
+    uintptr_t base_addr;
+
+    int fd = CreateMockMapsFile(mock_maps);
+    ASSERT_GE(fd, 0);
+    bool result = XrdHttpPelican::detail::GetModuleForAddress(
+        fd, 0x7f1234050000, module_path, sizeof(module_path), &base_addr);
+    close(fd);
+    EXPECT_TRUE(result);
+    EXPECT_STREQ(module_path, "/lib/libtest.so");
+    EXPECT_EQ(base_addr, 0x7f1234000000UL);
 }
 
 TEST_F(GetModuleForAddressTest, PathBufferTooSmall) {
