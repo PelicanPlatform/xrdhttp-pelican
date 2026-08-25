@@ -482,7 +482,7 @@ void PrintDetailedStackTrace(void **trace, int size) {
 
 #endif
 
-void SignalHandler(int sig) {
+void SignalHandler(int sig, siginfo_t *info, void * /*ucontext*/) {
     // First crashing thread wins; any other thread that faults concurrently
     // parks here until the winner's re-raise terminates the process.
     // (std::atomic_flag is guaranteed lock-free and async-signal-safe.)
@@ -540,7 +540,7 @@ void SignalHandler(int sig) {
     const char end_msg[] = "===== End of stack trace =====\n";
     _ = write(STDERR_FILENO, end_msg, sizeof(end_msg) - 1);
 
-    // Restore default handler and re-raise signal
+    // Restore default handler and re-deliver the signal
     struct sigaction sa;
     sa.sa_handler = SIG_DFL;
     sigemptyset(&sa.sa_mask);
@@ -552,6 +552,17 @@ void SignalHandler(int sig) {
     sigemptyset(&set);
     sigaddset(&set, sig);
     sigprocmask(SIG_UNBLOCK, &set, nullptr);
+
+    // For kernel-generated faults (si_code > 0), simply return: the faulting
+    // instruction re-executes and faults again under the default handler, so
+    // the core dump records the true siginfo (si_addr) and fault-time
+    // registers instead of a raise() from this handler.  User-sent signals
+    // (kill(2), abort(2)'s tgkill: si_code <= 0) would not re-fault on
+    // return, so those are re-raised instead; the core then shows the
+    // raise() but the original frames remain further down the stack.
+    if (info && info->si_code > 0 && (sig == SIGSEGV || sig == SIGILL)) {
+        return;
+    }
 
     // Re-raise the signal
     raise(sig);
@@ -587,7 +598,10 @@ void InstallSignalHandlers() {
     backtrace(warmup, 4);
 
     struct sigaction sa;
-    sa.sa_handler = SignalHandler;
+    // SA_SIGINFO: the handler uses si_code to distinguish genuine faults
+    // (re-delivered by returning, preserving the fault's siginfo in the
+    // core dump) from user-sent signals (re-raised).
+    sa.sa_sigaction = SignalHandler;
     // Block the other handled fault signals while the handler runs so a
     // second fault class (e.g. SIGABRT during the SIGSEGV handler) cannot
     // interleave on the same thread.
@@ -595,7 +609,7 @@ void InstallSignalHandlers() {
     sigaddset(&sa.sa_mask, SIGSEGV);
     sigaddset(&sa.sa_mask, SIGILL);
     sigaddset(&sa.sa_mask, SIGABRT);
-    sa.sa_flags = SA_RESTART;
+    sa.sa_flags = SA_RESTART | SA_SIGINFO;
 
     sigaction(SIGSEGV, &sa, nullptr);
     sigaction(SIGILL, &sa, nullptr);
