@@ -1,7 +1,7 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.12
-Release: 2%{?dist}
+Version: 0.0.13
+Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
 Group: System Environment/Daemons
@@ -63,8 +63,9 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
-* Tue Aug 25 2026 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.12-2
+* Tue Aug 25 2026 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.13-1
 - Add "--with xrootd6" build conditional
+- Fix symbol resolution on x86_64 platforms
 
 * Tue Aug 25 2026 Brian Bockelman <bbockelman@morgridge.org> - 0.0.12-1
 - Rewrite signal handler to use fewer signal unsafe functions.
