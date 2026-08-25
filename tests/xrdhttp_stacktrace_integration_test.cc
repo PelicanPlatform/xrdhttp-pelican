@@ -344,6 +344,21 @@ TEST_F(StackTraceTest, SegfaultPrintsStackTrace) {
     EXPECT_TRUE(CheckLogForPattern("Stack trace:"))
         << "Stack trace header not found in log";
 
+#ifdef __linux__
+    // When addr2line is available, the trace must contain symbolized frames
+    // (addr2line -f -C resolves and demangles function names), not just the
+    // fallback's module-path + offset lines.  The handler itself is always
+    // on the stack, so its demangled name is a reliable marker.
+    if (access("/usr/bin/addr2line", X_OK) == 0 ||
+        access("/bin/addr2line", X_OK) == 0 ||
+        access("/usr/local/bin/addr2line", X_OK) == 0) {
+        EXPECT_TRUE(CheckLogForPattern("SignalHandler(int"))
+            << "addr2line-symbolized frame not found in log; the handler may "
+               "have taken the fallback (module+offset) path even though "
+               "addr2line is installed";
+    }
+#endif
+
     if (testing::Test::HasFailure()) {
         DumpLogFile();
     }
