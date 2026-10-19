@@ -1,6 +1,6 @@
 
 Name: xrdhttp-pelican
-Version: 0.0.13
+Version: 0.0.14
 Release: 1%{?dist}
 Summary: A Pelican-specific plugin for the XrdHttp server
 
@@ -17,7 +17,7 @@ Source0: %{name}-%{version}.tar.gz
 
 %if %{with xrootd6}
 %define xrootd_current_major 6
-%define xrootd_current_minor 1
+%define xrootd_current_minor 2
 %else
 %define xrootd_current_major 5
 %define xrootd_current_minor 9
@@ -63,6 +63,9 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libXrdHttpPelican-*.so
 
 %changelog
+* Mon Oct 19 2026 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.14-1
+- Build against XRootD 6.2.0
+
 * Tue Aug 25 2026 Mátyás Selmeci <mselmeci@wisc.edu> - 0.0.13-1
 - Add "--with xrootd6" build conditional
 - Fix symbol resolution on x86_64 platforms
